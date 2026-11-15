@@ -18,6 +18,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 # The `@file` image attachments are read as base64 payloads.
 base64 = "0.22"
+# The interactive terminal: raw keys, bracketed paste, terminal size, and the
+# display width of what it draws.
+crossterm = "0.29"
+unicode-width = "0.2"
 
 [[bin]]
 name = "unharnessed"

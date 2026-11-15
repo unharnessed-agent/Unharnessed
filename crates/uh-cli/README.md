@@ -6,10 +6,25 @@ The `unharnessed` binary and composition root.
 
 - Argument parsing, mode selection and exit codes. Modes: `-p` (print, `text`
   or `json` via `--mode`) and `--mode acp`. Public commands: `help`,
-  `mcp add|list|get|remove`, `model list`, `session export`, `prompt`. The TUI,
-  the daemon modes and their commands (`agents`, `attach`, `status`, `doctor`,
-  `shutdown`, `update`, `schedule`, ...) were removed; the old names print
-  removal guidance.
+  `mcp add|list|get|remove`, `model list`, `session export`, `prompt`. The old
+  TUI, the daemon modes and their commands (`agents`, `attach`, `status`,
+  `doctor`, `shutdown`, `update`, `schedule`, ...) were removed; the old names
+  print removal guidance.
+- **Interactive terminal** (`terminal/`): a terminal launch without `-p`. It is
+  an ACP client, like the VS Code extension: it spawns `unharnessed --mode acp`
+  and drives it over JSON-RPC (`agent.rs`), so it holds no session logic. It
+  draws an inline screen (`screen.rs`: committed lines scroll into the
+  terminal's scrollback, one live frame is redrawn below them), the streamed
+  answer as Markdown (`markdown.rs`), the cells as short blocks
+  (`transcript.rs`), an input box (`editor.rs`), pickers (`picker.rs`), the
+  slash commands (`commands.rs`) and the `_unharnessed/providers/*` sign-ins
+  (`login.rs`), split by responsibility (`session.rs`: start, `-c`,
+  `--resume`, `/new`, `/resume`; `settings.rs`: `/model`, `/effort`,
+  `/fast`, `/help`). The agent process gets this run's own flags; only the
+  messages, the `@file` arguments and the session choice stay with the
+  terminal. Sent messages are kept in `<agent dir>/prompt-history.jsonl`
+  (plain text, last 500) for ↑. Verifier:
+  `scripts/unharnessed-terminal-e2e.py`.
 - **Print runtime** (`print_runtime.rs`): drives the in-process session engine
   for `-p`. It admits the prompts, runs the turn-boundary compaction checks
   (`print_boundary.rs`: provider retry/failover, overflow compact-and-retry,

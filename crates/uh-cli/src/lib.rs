@@ -54,6 +54,7 @@ pub(crate) mod provider_login;
 pub(crate) mod public_command;
 pub(crate) mod session_export;
 pub(crate) mod subscription_login;
+pub(crate) mod terminal;
 
 /// The runtime boundary: everything a mode-runner crate implements to plug
 /// into the `unharnessed` binary, plus the entry point that drives it.
@@ -239,6 +240,7 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
     )
     .initial_message;
     let options = mode::RunOptions {
+        argv: args,
         app_mode,
         config: mode::runtime_config_from_args(&parsed, cwd, agent_dir, session_dir.clone()),
         session: mode::SessionOptions {
