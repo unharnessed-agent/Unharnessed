@@ -22,9 +22,16 @@ windows-cross:
 	cargo check --workspace --target x86_64-pc-windows-gnu --all-targets
 	cargo clippy --workspace --target x86_64-pc-windows-gnu --all-targets -- -D warnings
 
+# Builds the Docker image (Dockerfile): the agent compiled from the pinned
+# toolchain, kernel venv pre-built, non-root user. Fails loudly when docker
+# is missing instead of silently skipping.
+docker-image:
+	@command -v docker >/dev/null 2>&1 || { echo "docker not installed (see docs.docker.com/get-docker)"; exit 1; }
+	docker build -t unharnessed .
+
 # Lints the live workflow file (.github/workflows/).
 actionlint:
 	@command -v actionlint >/dev/null 2>&1 || { echo "actionlint not installed (see rhysd/actionlint releases)"; exit 1; }
 	actionlint .github/workflows/ci.yml
 
-.PHONY: check deny windows-cross actionlint
+.PHONY: check deny windows-cross actionlint docker-image

@@ -437,6 +437,17 @@ Dependencies go one way, from `uh-types` up to `uh-cli`. Each crate's README sta
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
+### Docker
+
+The image builds the agent from the pinned toolchain, pre-builds the kernel venv, and runs it as a non-root user — the container this README asks you to use:
+
+```bash
+docker build -t unharnessed .
+docker run --rm -it -v "$PWD:/workspace" -e ANTHROPIC_API_KEY unharnessed -p "Fix the failing tests"
+```
+
+Credentials go in the providers' usual environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, ...), or mount the sign-in file: `-v ~/.unharnessed/auth.json:/home/agent/.unharnessed/auth.json:ro`. The kernel venv lives at `/opt/unharnessed/kernel-venv` (`UNHARNESSED_KERNEL_VENV`), so mounting `~/.unharnessed` for sign-ins, settings and sessions never shadows it. Sessions survive across runs with a home volume: `-v unharnessed-home:/home/agent`.
+
 ## Build from source
 
 Rust 1.98.1 (pinned in `rust-toolchain.toml`), [uv](https://docs.astral.sh/uv/), and Node for the extension.

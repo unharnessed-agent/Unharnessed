@@ -1,0 +1,10 @@
+# What the image builds from: Cargo.toml, Cargo.lock, rust-toolchain.toml,
+# crates/, unharnessed-runtime/ and skills/. Everything else stays out.
+.git/
+.github/
+.cursor/
+.vscode/
+vscode/
+scripts/
+target/
+*.vsix
