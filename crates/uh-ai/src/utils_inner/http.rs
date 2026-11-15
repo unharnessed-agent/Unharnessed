@@ -209,6 +209,16 @@ pub async fn send(request: RequestOptions) -> Result<HttpResponse, ProviderError
         builder = builder.header(name, value);
     }
     if let Some(body) = &request.body {
+        // Provider bodies are JSON. The TS SDKs always send this header, and
+        // some Anthropic-compatible endpoints (MiniMax) reject a request
+        // without it as "invalid params".
+        let has_content_type = request
+            .headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("content-type"));
+        if !has_content_type {
+            builder = builder.header("content-type", "application/json");
+        }
         builder = builder.body(body.clone());
     }
 
