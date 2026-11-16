@@ -143,7 +143,7 @@ impl CompactionArms {
         controller
     }
 
-    fn clear_abort_controller(&self, controller: &Arc<AbortController>) {
+    pub(super) fn clear_abort_controller(&self, controller: &Arc<AbortController>) {
         let mut slot = self
             .auto_compaction_abort
             .lock()
@@ -158,6 +158,16 @@ impl CompactionArms {
 }
 
 impl AcpSession {
+    /// Install before checking cancellation so a stop cannot miss a new
+    /// compaction controller. Shared by automatic and manual compaction.
+    pub(super) fn compaction_abort_controller(&self) -> Arc<AbortController> {
+        let controller = self.arms.install_abort_controller();
+        if self.cancel_requested() {
+            controller.abort();
+        }
+        controller
+    }
+
     /// TS `_checkCompaction` at the settled-turn boundary (`agent_end`):
     /// the overflow Case 1 first, then the threshold arm. `assistant` is
     /// the turn's settled message; an aborted message never reaches here
@@ -176,6 +186,9 @@ impl AcpSession {
         // same queue while it swaps the slots, so no arm can pair the
         // pre-switch model with the switched provider's key.
         let (model, api_key) = mode.model_and_api_key().await;
+        if self.cancel_requested() {
+            return (CompactionCheckRun::Proceed, None);
+        }
         let Some(model) = model else {
             // TS reads `this.model?.contextWindow ?? 0`: a session
             // without a resolvable model never crosses a threshold.
@@ -470,7 +483,7 @@ async fn run_compaction(
     model: &Model,
     api_key: Option<String>,
 ) -> anyhow::Result<CompactOutcome> {
-    let controller = session.arms.install_abort_controller();
+    let controller = session.compaction_abort_controller();
     let signal = controller.signal();
     session.usage.compacting(true).await;
     let compact = async {

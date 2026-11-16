@@ -130,6 +130,7 @@ pub(crate) async fn execute_prompt_session_command(
             model,
             api_key,
             autonomous: &mut autonomous,
+            abort: None,
         };
         execute_session_command(engine, &mut params, command).await
     };
