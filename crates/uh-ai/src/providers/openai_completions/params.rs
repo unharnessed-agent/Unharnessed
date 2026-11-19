@@ -338,6 +338,19 @@ pub(crate) fn build_headers(
         headers.push((name.clone(), value.clone()));
     }
 
+    // The `openai` SDK this provider ports sets `content-type:
+    // application/json` on every JSON request body; the Rust transport sends
+    // raw header lists, so the equivalent header must be explicit. Some
+    // gateways reject the request without it (and a JSON error body returned
+    // with a 200 status then reads as an event-less SSE stream: an empty
+    // assistant message). A `model.headers` or `options.headers` entry wins.
+    if !headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+    {
+        headers.push(("Content-Type".into(), "application/json".into()));
+    }
+
     if let Some(session_id) = cache_session_id {
         if compat.send_session_affinity_headers {
             headers.push(("session_id".into(), session_id.to_string()));
@@ -396,6 +409,43 @@ mod tests {
                 name.eq_ignore_ascii_case("X-Prime-Team-ID") && value == "auth-owner-team"
             }),
             "the auth owner's header must ship: {headers:?}"
+        );
+    }
+
+    /// The provider sends `Content-Type: application/json` on the request
+    /// body unless the caller (or the model config) supplies one: gateways
+    /// that reject the request without it return a JSON error body with a
+    /// 200 status, which the SSE decoder reads as an event-less stream (an
+    /// empty assistant message with no usage).
+    #[test]
+    fn json_request_bodies_carry_content_type_unless_overridden() {
+        let model = models_generated::get_model("zai", "glm-4.7")
+            .expect("the catalog carries a zai model");
+        let compat = crate::providers::openai_completions::get_compat(model);
+        let headers = build_headers(model, "k", None, None, &compat, None);
+        assert!(
+            headers
+                .iter()
+                .any(|(name, value)| name.eq_ignore_ascii_case("content-type")
+                    && value.eq_ignore_ascii_case("application/json")),
+            "the JSON body must ship a Content-Type header: {headers:?}"
+        );
+
+        // A model-level or caller-level override replaces the default.
+        let caller = std::collections::HashMap::from([(
+            "Content-Type".to_string(),
+            "application/json; charset=utf-8".to_string(),
+        )]);
+        let headers = build_headers(model, "k", Some(&caller), None, &compat, None);
+        let content_types: Vec<&str> = headers
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+            .map(|(_, value)| value.as_str())
+            .collect();
+        assert_eq!(
+            content_types,
+            vec!["application/json; charset=utf-8"],
+            "the caller's Content-Type must win and must not be duplicated: {headers:?}"
         );
     }
 
