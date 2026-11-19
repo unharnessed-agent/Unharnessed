@@ -353,6 +353,16 @@ pub(crate) fn build_headers(
         }
     }
 
+    // Strict OpenAI-compatible gateways (api.deepseek.com) reject the JSON
+    // body without an explicit content type: 415 Expected request with
+    // `Content-Type: application/json`. The request layer sends the
+    // serialized params as a raw string, so the header must come from here.
+    if !headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+    {
+        headers.push(("Content-Type".into(), "application/json".into()));
+    }
     headers.insert(0, ("Authorization".into(), format!("Bearer {api_key}")));
     let _ = conversation_id;
     headers
@@ -396,6 +406,37 @@ mod tests {
                 name.eq_ignore_ascii_case("X-Prime-Team-ID") && value == "auth-owner-team"
             }),
             "the auth owner's header must ship: {headers:?}"
+        );
+    }
+
+    /// A JSON body must carry a `Content-Type`, and a caller-provided one
+    /// must win without duplicating: `DeepSeek` answers a content-type-less
+    /// body with `415 Expected request with "Content-Type: application/json"`.
+    #[test]
+    fn json_content_type_ships_and_a_caller_header_wins() {
+        let model = models_generated::get_model("prime-inference", "z-ai/glm-5.3")
+            .expect("the catalog carries a prime-inference model");
+        let compat = crate::providers::openai_completions::get_compat(model);
+        let headers = build_headers(model, "k", None, None, &compat, None);
+        assert!(
+            headers.iter().any(|(name, value)| {
+                name.eq_ignore_ascii_case("Content-Type") && value == "application/json"
+            }),
+            "a JSON body must carry a Content-Type: {headers:?}"
+        );
+
+        let caller = std::collections::HashMap::from([(
+            "Content-Type".to_string(),
+            "application/json; profile=buffered".to_string(),
+        )]);
+        let headers = build_headers(model, "k", Some(&caller), None, &compat, None);
+        assert_eq!(
+            headers
+                .iter()
+                .filter(|(name, _)| name.eq_ignore_ascii_case("Content-Type"))
+                .count(),
+            1,
+            "a caller-provided content type must win, not duplicate: {headers:?}"
         );
     }
 
