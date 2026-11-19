@@ -373,6 +373,22 @@ Every rule in a system prompt is a decision made for the model, and it sits in t
 
 ### CLI
 
+`unharnessed` in a terminal opens a small interactive agent: type, read the answer as it streams, and see each Python cell as a short block (its first lines of code, its last lines of output).
+
+```bash
+unharnessed                                       # interactive; /login on the first run
+unharnessed "Fix the failing test"                # interactive, with a first message
+unharnessed -c                                    # reopen this folder's last conversation
+```
+
+- `/login` connects a provider: a subscription (browser sign-in or device code), an API key, a local server (Ollama, LM Studio, llama.cpp, vLLM), or any OpenAI-compatible endpoint. `/logout` removes a credential.
+- `/model` and `/effort` pick the model and the reasoning effort; the choice is saved as your default. `/fast` toggles fast mode where the model has it.
+- `/new`, `/resume`, `/help`, `/quit`, and the agent's own `/compact`, `/goal`, `/autonomous` and `/skill:…`.
+- Ctrl+P switches the model, Shift+Tab steps through the reasoning efforts, Tab on an empty input lists every command.
+- Esc interrupts the agent. Typing while it works queues the next message. Alt+Enter or Ctrl+J adds a line.
+
+It is an ACP client of the same binary, like the VS Code extension, so sessions, sign-ins and settings are shared with it.
+
 ```bash
 unharnessed -p "Compute 2**100 in the kernel"     # text output
 unharnessed --mode json -p "..."                  # JSON event stream
@@ -397,7 +413,7 @@ unharnessed prompt                                # the assembled system prompt
 ┌─────────────────────────┐   ACP (JSON-RPC, stdio)   ┌────────────────────────────────┐
 │ VS Code extension       │ ────────────────────────▶ │ unharnessed  (Rust)            │
 │ TypeScript + React      │                           │                                │
-└─────────────────────────┘                           │ uh-cli      binary, -p, logins │
+└─────────────────────────┘                           │ uh-cli      -p, logins, tty UI │
                                                       │ uh-daemon   ACP transport      │
               unharnessed -p / --mode json  ────────▶ │ uh-core     session engine     │
                                                       │ uh-agent    turn loop          │
@@ -457,6 +473,7 @@ Credentials come from `~/.unharnessed/auth.json` (written by the sign-ins) or th
 - `scripts/unharnessed-smoke.sh <dir>`: drives the real binary end to end against a real model.
 - `scripts/unharnessed-wakes-e2e.py <dir>`: provider retry and wake-ups, in `-p` and ACP, with the faux provider.
 - `scripts/unharnessed-skill-loading.sh <dir>`: skill loading, no model needed.
+- `scripts/unharnessed-terminal-e2e.py <dir>`: the interactive terminal in a pseudo-terminal (read back with pyte), with the faux provider and a fake OpenAI-compatible endpoint; no network.
 - `cd vscode && npm run typecheck`: the extension's types. F5 opens an Extension Development Host with `UNHARNESSED_BIN` pointing at the debug binary.
 - `cd vscode && npm run test:e2e`: drives a real VS Code through each scenario of `test/e2e/run.mjs` with the faux provider (`UNHARNESSED_E2E_ONLY=<name>` runs one).
 - `UNHARNESSED_E2E_VSIX=<the .vsix> node test/e2e/run.mjs` (from `vscode/`): the same scenarios on a packaged `.vsix`, installed by VS Code.

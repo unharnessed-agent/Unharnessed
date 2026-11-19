@@ -46,13 +46,18 @@ impl crate::mode::Runtime for PrintRuntime {
                     Ok(1)
                 }
             },
-            // This build has no terminal UI: a terminal launch without
-            // `-p`/`--mode` points at the headless modes instead.
+            // A terminal launch without `-p`/`--mode`: the interactive
+            // terminal, an ACP client of this same binary. Its output must
+            // be a terminal too.
             AppMode::Interactive => {
-                eprintln!(
-                    "Error: this build has no interactive terminal UI; use -p/--print, --mode json, or --mode acp"
-                );
-                Ok(1)
+                if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+                    Ok(crate::terminal::run(options))
+                } else {
+                    eprintln!(
+                        "Error: the interactive terminal needs a terminal on stdout; use -p/--print, --mode json, or --mode acp"
+                    );
+                    Ok(1)
+                }
             }
             // ACP mode: a thin JSON-RPC stdio transport over the same
             // in-process session engine the print mode uses.

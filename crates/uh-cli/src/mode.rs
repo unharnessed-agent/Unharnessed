@@ -114,6 +114,9 @@ pub struct SessionOptions {
 /// before entering the mode runners.
 #[derive(Debug, Clone)]
 pub struct RunOptions {
+    /// The arguments as parsed, after the public-command rewrites: the
+    /// interactive terminal hands them on to its agent process.
+    pub argv: Vec<String>,
     pub app_mode: AppMode,
     pub config: RuntimeConfig,
     pub session: SessionOptions,
@@ -128,6 +131,26 @@ pub struct RunOptions {
     pub initial_images: Vec<uh_agent::types::ImageContent>,
     pub verbose: bool,
     pub offline: bool,
+}
+
+#[cfg(test)]
+impl RunOptions {
+    /// Options with only `argv` set (the interactive terminal's tests).
+    pub(crate) fn for_terminal_tests(argv: Vec<String>) -> RunOptions {
+        RunOptions {
+            argv,
+            app_mode: AppMode::Interactive,
+            config: RuntimeConfig::default(),
+            session: SessionOptions::default(),
+            messages: Vec::new(),
+            file_args: Vec::new(),
+            list_models: None,
+            initial_message: None,
+            initial_images: Vec::new(),
+            verbose: false,
+            offline: false,
+        }
+    }
 }
 
 /// A missing runtime subsystem, reported as a typed error instead of faked
