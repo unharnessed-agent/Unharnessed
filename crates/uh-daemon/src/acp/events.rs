@@ -195,6 +195,7 @@ pub fn acp_updates_for_event(
                     Some(code) => json!({ "code": code }),
                     None => args.clone(),
                 },
+                meta: None,
             }]
         }
         AcpEngineEvent::CompactionEnd {
@@ -243,7 +244,7 @@ pub fn acp_updates_for_event(
             } else {
                 None
             };
-            vec![AcpSessionUpdate::ToolCallUpdate {
+            let mut updates = vec![AcpSessionUpdate::ToolCallUpdate {
                 tool_call_id: tool_call_id.clone(),
                 status: Some(if *is_error {
                     AcpToolStatus::Failed
@@ -257,9 +258,62 @@ pub fn acp_updates_for_event(
                         ..Default::default()
                     })
                 }),
-            }]
+                raw_output: None,
+            }];
+            if tool_name == IPYTHON_TOOL_NAME {
+                updates.extend(mcp_call_updates(tool_call_id, result));
+            }
+            updates
         }
     }
+}
+
+/// One `tool_call` + `tool_call_update` pair per MCP tool call the cell made
+/// (`details.mcpCalls`), so an ACP client sees each call on its own. The
+/// `_meta` flag and the `{server, tool, arguments}` input are what clients
+/// read to treat it as an MCP call.
+fn mcp_call_updates(cell_id: &str, result: &Value) -> Vec<AcpSessionUpdate> {
+    let Some(calls) = result
+        .pointer("/details/mcpCalls")
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    let mut updates = Vec::with_capacity(calls.len() * 2);
+    for (n, call) in calls.iter().enumerate() {
+        let server = call
+            .get("server")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let tool = call.get("tool").and_then(Value::as_str).unwrap_or_default();
+        let tool_call_id = format!("{cell_id}:mcp:{n}");
+        updates.push(AcpSessionUpdate::ToolCall {
+            tool_call_id: tool_call_id.clone(),
+            title: format!("{server}.{tool}"),
+            kind: AcpToolKind::Other,
+            status: AcpToolStatus::InProgress,
+            raw_input: json!({
+                "server": server,
+                "tool": tool,
+                "arguments": call.get("arguments").cloned().unwrap_or_else(|| json!({})),
+            }),
+            meta: Some(json!({ "is_mcp_tool_call": true })),
+        });
+        updates.push(AcpSessionUpdate::ToolCallUpdate {
+            tool_call_id,
+            status: Some(
+                if call.get("isError").and_then(Value::as_bool) == Some(true) {
+                    AcpToolStatus::Failed
+                } else {
+                    AcpToolStatus::Completed
+                },
+            ),
+            content: None,
+            meta: None,
+            raw_output: call.get("result").cloned(),
+        });
+    }
+    updates
 }
 
 /// A `session_info_update` carrying one namespaced payload.

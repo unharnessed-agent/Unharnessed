@@ -62,6 +62,8 @@ pub struct ExecuteResult {
     pub background_output: Option<String>,
     pub error: Option<KernelErrorInfo>,
     pub attachments: Vec<KernelAttachment>,
+    /// MCP tool calls the cell made, reported in `details.mcpCalls`.
+    pub mcp_calls: Vec<serde_json::Value>,
 }
 
 /// The kernel is still running a previously interrupted cell.
@@ -424,6 +426,9 @@ pub async fn execute_ipython(
             "traceback": error.traceback,
         });
         details["errorEname"] = json!(error.ename);
+    }
+    if !r.mcp_calls.is_empty() {
+        details["mcpCalls"] = json!(r.mcp_calls);
     }
 
     Ok(ToolExecutionResult {

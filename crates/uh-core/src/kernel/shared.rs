@@ -42,6 +42,9 @@ pub const DIFF_DISPLAY_MIME: &str = "application/vnd.unharnessed.diff+json";
 pub const ATTACHMENT_DISPLAY_MIME: &str = "application/vnd.unharnessed.attachment+json";
 /// Internal lifetime notices, consumed before user display rendering.
 pub const BASH_ACTIVITY_DISPLAY_MIME: &str = "application/vnd.unharnessed.bash-activity+json";
+/// MIME tag `rlm.mcp.call_tool` reports each MCP tool call under:
+/// `{server, tool, arguments, result, isError}`.
+pub const MCP_CALL_DISPLAY_MIME: &str = "application/vnd.unharnessed.mcp-call+json";
 
 pub const EXECUTE_STATUS_OK: &str = "ok";
 pub const EXECUTE_STATUS_ERROR: &str = "error";
@@ -136,6 +139,8 @@ pub struct ExecuteResult {
     pub diffs: Option<Vec<KernelDiffDisplay>>,
     /// Media attachments emitted via display events, in order.
     pub attachments: Option<Vec<KernelAttachment>>,
+    /// MCP tool calls the cell made, as [`MCP_CALL_DISPLAY_MIME`] payloads, in order.
+    pub mcp_calls: Option<Vec<Value>>,
     /// Output that arrived without this cell's id (user threads, other cells' leftovers, raw fd writes).
     pub background_output: Option<String>,
     pub status: ExecuteStatus,

@@ -220,6 +220,7 @@ fn convert_execute_result(
                 data: attachment.data,
             })
             .collect(),
+        mcp_calls: result.mcp_calls.unwrap_or_default(),
     }
 }
 
