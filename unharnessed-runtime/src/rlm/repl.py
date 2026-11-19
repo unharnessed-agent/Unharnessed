@@ -579,10 +579,30 @@ def _interrupt_event(cell_id: str, exc: BaseException) -> dict[str, Any]:
     return {"event": "error", "id": cell_id, "ename": "KeyboardInterrupt", "evalue": "", "traceback": lines}
 
 
+def _keep_mcp_client(tree: ast.Module) -> None:
+    """Drop a top-level plain `import mcp` while the `rlm.mcp` client is loaded.
+
+    Models often start a cell with `import mcp`, which rebinds the pre-imported
+    client to the MCP SDK package of the same name, so every `mcp.call_tool`
+    after it fails. `import mcp as ...` and `from mcp import ...` still reach the SDK.
+    """
+    if "rlm.mcp" not in sys.modules:
+        return
+    body: list[ast.stmt] = []
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            node.names = [alias for alias in node.names if alias.name != "mcp" or alias.asname is not None]
+            if not node.names:
+                continue
+        body.append(node)
+    tree.body = body
+
+
 def _compile_cell(code: str, filename: str) -> tuple[list[types.CodeType], bool]:
     """Compile a cell; a trailing expression compiles separately in eval mode."""
     linecache.cache[filename] = (len(code), None, code.splitlines(keepends=True), filename)
     tree = ast.parse(code, filename)
+    _keep_mcp_client(tree)
     trailing: ast.Expression | None = None
     if tree.body and isinstance(tree.body[-1], ast.Expr):
         trailing = ast.Expression(tree.body.pop().value)
