@@ -308,6 +308,7 @@ impl GoalDriver {
         let previous_command_wait = self.command_wait_until_ms;
         let previous_relaunched_beside = self.relaunched_beside_a_command;
         let previous_pending = self.pending_continuation();
+        let previous_completed = self.completed_unhandled;
         // TS `_startGoal`: a fresh goal starts with no owed continuation
         // (and no pending one — `_clearQueuedGoalContexts` drops the queued
         // contexts with the state change) — and with a fresh no-progress
@@ -331,6 +332,7 @@ impl GoalDriver {
             // A failed start leaves the previous goal's bookkeeping intact
             // (the no-progress cap included).
             self.accounted_messages = previous_accounted;
+            self.completed_unhandled = previous_completed;
             self.owed_continuation = previous_owed;
             self.command_wait_until_ms = previous_command_wait;
             self.relaunched_beside_a_command = previous_relaunched_beside;
@@ -798,8 +800,13 @@ impl GoalDriver {
     /// host wakes at this instant.
     #[must_use]
     pub fn owed_continuation_wake_at(&self) -> Option<u64> {
-        (self.owed_continuation && self.state.status == GoalStatus::Active)
-            .then_some(self.command_wait_until_ms)
+        (self.owed_continuation && self.state.status == GoalStatus::Active).then(|| {
+            // Match the delivery gates so an expired command wait cannot
+            // spin the wake watcher while either refusal window is open.
+            self.command_wait_until_ms
+                .max(self.no_progress_backoff_until_ms)
+                .max(self.parked_refusal_until_ms)
+        })
     }
 
     /// TS `_maybeResumeGoalContinuationAfterRlmWork`: deliver the owed

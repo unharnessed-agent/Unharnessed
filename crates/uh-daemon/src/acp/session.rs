@@ -34,7 +34,7 @@ pub struct AcpSession {
     producer: Arc<UpdateProducer>,
     subscription: Mutex<Option<Subscription>>,
     agent: Arc<Agent>,
-    cancel_requested: AtomicBool,
+    cancel_requested: Arc<AtomicBool>,
     /// The autonomous run state (`/autonomous` flags and commands mutate it).
     pub autonomous: Arc<Mutex<uh_core::autonomous::AutonomousRuntimeState>>,
     /// The autonomous continuation policy (shell gates in the session cwd).
@@ -82,6 +82,7 @@ impl AcpSession {
         let goal_budget_crossed = Arc::new(AtomicBool::new(false));
         let usage = UsageReporter::new(engine.clone(), model, producer.clone());
         let steers = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let cancel_requested = Arc::new(AtomicBool::new(false));
         let subscription = subscribe_engine_events(
             &engine,
             producer.clone(),
@@ -93,6 +94,7 @@ impl AcpSession {
             goal_budget_crossed.clone(),
             usage.clone(),
             steers.clone(),
+            cancel_requested.clone(),
         )
         .await;
         AcpSession {
@@ -100,7 +102,7 @@ impl AcpSession {
             producer,
             subscription: Mutex::new(Some(subscription)),
             agent: engine.session.agent().clone(),
-            cancel_requested: AtomicBool::new(false),
+            cancel_requested,
             autonomous,
             autonomous_driver,
             engine,
@@ -154,8 +156,13 @@ impl AcpSession {
         self.cancel_requested.load(Ordering::SeqCst)
     }
 
+    /// Stop the entire ACP turn, including work between agent runs.
+    /// Call under the turn-slot lock while the session can admit new work.
     pub fn request_cancel(&self) {
         self.cancel_requested.store(true, Ordering::SeqCst);
+        self.abort_auto_compaction();
+        self.agent.abort();
+        self.agent.clear_all_queues();
     }
 
     /// The cancelled turn has settled: the next prompt or wake runs.
@@ -269,8 +276,10 @@ async fn subscribe_engine_events(
     goal_budget_crossed: Arc<AtomicBool>,
     usage: Arc<UsageReporter>,
     steers: Arc<std::sync::Mutex<Vec<i64>>>,
+    cancel_requested: Arc<AtomicBool>,
 ) -> Subscription {
     let agent = engine.session.agent().clone();
+    let weak_agent = Arc::downgrade(&agent);
     let goal_driver = engine.goal_driver.clone();
     let session = engine.session.shared_persistence();
     agent
@@ -286,7 +295,19 @@ async fn subscribe_engine_events(
             let goal_budget_crossed = goal_budget_crossed.clone();
             let usage = usage.clone();
             let steers = steers.clone();
+            let cancel_requested = cancel_requested.clone();
+            let weak_agent = weak_agent.clone();
             Box::pin(async move {
+                // Cover cancellation between an admission check and run
+                // registration, including provider retries and wake turns.
+                if matches!(event, AgentEvent::AgentStart)
+                    && cancel_requested.load(Ordering::SeqCst)
+                {
+                    if let Some(agent) = weak_agent.upgrade() {
+                        agent.abort();
+                    }
+                    return Err(uh_agent::abort::aborted_error());
+                }
                 // A user row that starts an agent run resets the overflow
                 // recovery machine (TS `startsAgentRun` at
                 // `message_start`): the stale attempt state from the

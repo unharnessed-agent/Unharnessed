@@ -181,6 +181,7 @@ impl std::error::Error for SummaryCallError {}
 ///
 /// Returns an error when the summarizer wire call fails, or when its reply
 /// stops with an error (labeled with `failure`).
+#[allow(clippy::too_many_arguments)]
 pub async fn complete_summary_call(
     model: &uh_types::ai::Model,
     api_key: Option<String>,
@@ -189,7 +190,12 @@ pub async fn complete_summary_call(
     request_messages: Vec<AgentMessage>,
     on_delta: Option<SummaryDeltaSink>,
     failure: &'static str,
+    abort: Option<&uh_agent::abort::AbortSignal>,
 ) -> anyhow::Result<SummarySlice> {
+    // Dropping either summary future also stops its provider request,
+    // including when the host's outer compaction race is cancelled.
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let _cancel_on_drop = cancel.clone().drop_guard();
     let messages = request_messages
         .into_iter()
         .filter_map(|message| match message {
@@ -208,26 +214,36 @@ pub async fn complete_summary_call(
             max_tokens: Some(max_tokens),
             api_key,
             headers: headers.map(|headers| headers.into_iter().collect()),
+            signal: Some(cancel),
             ..Default::default()
         });
-    let assistant = match on_delta {
-        None => uh_ai::complete_simple(model, &context, Some(stream_options)).await?,
-        Some(on_delta) => {
-            // The live path rides the same provider stream
-            // `complete_simple` awaits the end of: every text delta is
-            // forwarded to the sink as it arrives, and the terminal
-            // event's message is the summary exactly like the one-shot
-            // arm. Thinking deltas stay off the sink — the final summary
-            // carries only the text blocks.
-            let mut stream = uh_ai::stream_simple(model, &context, Some(stream_options))?;
-            while let Some(event) = stream.next_event().await {
-                if let uh_types::ai::AssistantMessageEvent::TextDelta { delta, .. } = &event {
-                    on_delta(delta);
+    let call = async {
+        Ok::<_, anyhow::Error>(match on_delta {
+            None => uh_ai::complete_simple(model, &context, Some(stream_options)).await?,
+            Some(on_delta) => {
+                // The live path rides the same provider stream
+                // `complete_simple` awaits the end of: every text delta is
+                // forwarded to the sink as it arrives, and the terminal
+                // event's message is the summary exactly like the one-shot
+                // arm. Thinking deltas stay off the sink — the final summary
+                // carries only the text blocks.
+                let mut stream = uh_ai::stream_simple(model, &context, Some(stream_options))?;
+                while let Some(event) = stream.next_event().await {
+                    if let uh_types::ai::AssistantMessageEvent::TextDelta { delta, .. } = &event {
+                        on_delta(delta);
+                    }
                 }
+                stream.result().await
             }
-            stream.result().await
-        }
+        })
     };
+    let assistant = match abort {
+        Some(signal) => uh_agent::abort::race_with_abort(call, signal).await??,
+        None => call.await?,
+    };
+    if assistant.stop_reason == uh_types::ai::StopReason::Aborted {
+        return Err(uh_agent::abort::aborted_error());
+    }
     if assistant.stop_reason == uh_types::ai::StopReason::Error {
         return Err(SummaryCallError {
             message: format!(
