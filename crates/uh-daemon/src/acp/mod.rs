@@ -388,9 +388,7 @@ async fn teardown(state: &Arc<Mutex<ConnectionState>>, mode: &AcpModeState) {
     let Some(mut entry) = entry else {
         return;
     };
-    entry.session.abort_auto_compaction();
-    entry.session.agent().abort();
-    entry.session.agent().clear_all_queues();
+    entry.session.request_cancel();
     entry.session.agent().wait_for_idle().await;
     if let Some(task) = entry.prompt_task.take() {
         let _ = task.await;
@@ -532,27 +530,16 @@ async fn handle_notification(method: String, params: Value, state: Arc<Mutex<Con
     // Only cancel the addressed session: aborting unconditionally would kill
     // whichever turn happens to be running, and leave the real turn's stop
     // reason wrong.
-    let session = {
-        let state = state.lock().await;
-        let Some(entry) = state
-            .session
-            .as_ref()
-            .filter(|entry| entry.session.id == session_id && entry.prompt_task.is_some())
-        else {
-            return;
-        };
-        if entry.session.cancel_requested() {
-            return;
-        }
-        entry.session.clone()
-    };
-    session.request_cancel();
-    // TS `requestAbort` aborts the in-flight auto-compaction too, not
-    // just the agent loop: an arm summarizer must not outlive the turn
-    // it was cancelling.
-    session.abort_auto_compaction();
-    session.agent().abort();
-    session.agent().clear_all_queues();
+    let state = state.lock().await;
+    if let Some(entry) = state
+        .session
+        .as_ref()
+        .filter(|entry| entry.session.id == session_id && entry.prompt_task.is_some())
+    {
+        // Serialize the flag AND aborts with slot release/admission: neither
+        // a stale flag nor a late abort may reach the next prompt or wake.
+        entry.session.request_cancel();
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -838,10 +825,10 @@ async fn handle_session_close(
         if state.session_close_in_flight {
             None
         } else {
-            match state.session.take() {
+            match state.session.as_ref() {
                 Some(entry) if entry.session.id == session_id => {
                     state.session_close_in_flight = true;
-                    Some(entry)
+                    state.session.take()
                 }
                 _ => {
                     let _ = tx.send(internal_error(
@@ -860,9 +847,7 @@ async fn handle_session_close(
         ));
         return;
     };
-    entry.session.abort_auto_compaction();
-    entry.session.agent().abort();
-    entry.session.agent().clear_all_queues();
+    entry.session.request_cancel();
     entry.session.agent().wait_for_idle().await;
     // The cancelled prompt resolves before the close response: the turn task
     // is awaited first and its frames already sit in the write queue.

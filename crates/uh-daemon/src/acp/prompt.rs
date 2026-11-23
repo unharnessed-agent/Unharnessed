@@ -247,7 +247,11 @@ pub(super) async fn start_wake_turn(
 /// Admit a wake's turn: a `bash()` completion runs on its injected row, a
 /// timed wake on its marker prompt, a goal's finished wait on its continuation
 /// (a turn may have delivered it meanwhile: nothing runs then).
-async fn admit_wake(mode: &AcpModeState, wake: Wake) -> anyhow::Result<PromptOutcome> {
+async fn admit_wake(
+    mode: &AcpModeState,
+    session: &AcpSession,
+    wake: Wake,
+) -> anyhow::Result<PromptOutcome> {
     match wake {
         Wake::BashDone(messages) => {
             mode.engine
@@ -262,10 +266,27 @@ async fn admit_wake(mode: &AcpModeState, wake: Wake) -> anyhow::Result<PromptOut
                 .await
         }
         Wake::GoalContinuation => match mode.engine.take_owed_goal_continuation().await {
-            Some(message) => mode.engine.session.prompt_injected_message(&message).await,
+            Some(message) => prompt_goal_continuation(mode, session, &message, true).await,
             None => Ok(PromptOutcome::Prompt),
         },
     }
+}
+
+/// Withdraw a cancelled, unadmitted mint. Start/resume contexts and budget
+/// steers do not spend a continuation slot and must not roll one back.
+async fn prompt_goal_continuation(
+    mode: &AcpModeState,
+    session: &AcpSession,
+    message: &uh_types::session::CustomMessage,
+    minted: bool,
+) -> anyhow::Result<PromptOutcome> {
+    if session.cancel_requested() {
+        if minted {
+            goal_continuation::rollback_goal_mint(mode).await;
+        }
+        return Err(uh_agent::abort::aborted_error());
+    }
+    mode.engine.session.prompt_injected_message(message).await
 }
 
 /// Re-issue a failed turn under the provider retry/failover policy. The
@@ -377,6 +398,14 @@ async fn run_prompt_turn(
             session.run_pre_turn_compaction(&mode).await;
         }
     }
+    if session.cancel_requested() {
+        let id = match &start {
+            TurnStart::Prompt { id, .. } => Some(id),
+            TurnStart::Wake(_) => None,
+        };
+        cancelled_before_start(&state, &session, id, &session_id, turn_id, tx).await;
+        return;
+    }
     let (id, admission) = match start {
         TurnStart::Prompt { id, prompt } => {
             let admission = mode
@@ -401,7 +430,7 @@ async fn run_prompt_turn(
                 .await;
             (Some(id), admission)
         }
-        TurnStart::Wake(wake) => (None, admit_wake(&mode, wake).await),
+        TurnStart::Wake(wake) => (None, admit_wake(&mode, &session, wake).await),
     };
 
     // The settled-turn outcome: the failure text (a failed turn errors the
@@ -582,12 +611,11 @@ async fn run_prompt_turn(
         // it like any admitted prompt, and its own settled boundary
         // re-enters this loop.
         if let Some(message) = threshold_continuation {
-            session.run_pre_turn_compaction(&mode).await;
-            if let Err(error) = mode.engine.session.prompt_injected_message(&message).await {
-                turn_failure = Some(format!("{error:#}"));
+            if !run_goal_continuation_segment(&mode, &session, message, true, &mut turn_failure)
+                .await
+            {
                 break;
             }
-            mode.engine.session.agent().wait_for_idle().await;
             continue;
         }
         if session.cancel_requested() {
@@ -603,13 +631,21 @@ async fn run_prompt_turn(
         // prompt); no active goal falls through to the autonomous arm.
         match goal_continuation::goal_follow_up(&mode, &session).await {
             goal_continuation::GoalFollowUp::Turn(message) => {
-                let message = *message;
-                session.run_pre_turn_compaction(&mode).await;
-                if let Err(error) = mode.engine.session.prompt_injected_message(&message).await {
-                    turn_failure = Some(format!("{error:#}"));
+                let minted = message
+                    .details
+                    .as_ref()
+                    .is_some_and(|details| details["kind"] == "continuation");
+                if !run_goal_continuation_segment(
+                    &mode,
+                    &session,
+                    *message,
+                    minted,
+                    &mut turn_failure,
+                )
+                .await
+                {
                     break;
                 }
-                mode.engine.session.agent().wait_for_idle().await;
             }
             // A blocked goal hands the session back to the user: no
             // autonomous turn, no wake runs behind it.
@@ -635,6 +671,9 @@ async fn run_prompt_turn(
                         // any admitted prompt); its failure settles the
                         // prompt.
                         session.run_pre_turn_compaction(&mode).await;
+                        if session.cancel_requested() {
+                            break;
+                        }
                         if let Err(error) = mode
                             .engine
                             .session
@@ -705,6 +744,9 @@ async fn run_session_command_segment(
     // config queue: a concurrent picker switch cannot hand `/compact`
     // the pre-switch model with the switched provider's key.
     let (model, api_key) = mode.model_and_api_key().await;
+    if session.cancel_requested() {
+        return Err(uh_agent::abort::aborted_error());
+    }
     let Some(model) = model else {
         // Unreachable in practice (the engine assembly requires a model);
         // fail as a request error instead of a turn failure.
@@ -715,6 +757,8 @@ async fn run_session_command_segment(
     // listener's per-message accounting must be able to take the same
     // mutex while that turn runs.
     let compacts = command.name == "compact";
+    let controller = compacts.then(|| session.compaction_abort_controller());
+    let signal = controller.as_ref().map(|controller| controller.signal());
     if compacts {
         session.usage.compacting(true).await;
     }
@@ -724,11 +768,15 @@ async fn run_session_command_segment(
             model: &model,
             api_key,
             autonomous: &mut autonomous,
+            abort: signal.as_ref(),
         };
         execute_session_command(&mode.engine, &mut params, command).await
     };
     if compacts {
         session.usage.compacting(false).await;
+    }
+    if let Some(controller) = controller {
+        session.arms.clear_abort_controller(&controller);
     }
 
     // A compaction publishes its namespaced event whether it ran (result
@@ -760,7 +808,9 @@ async fn run_session_command_segment(
         // continuation runs as the turn's model segment, the scheduled
         // continue over the queued follow-up.
         if let Some(message) = goal_continuation::mint_goal_continuation(mode, session).await {
-            return run_goal_continuation_segment(mode, session, message, turn_failure).await;
+            return Ok(
+                run_goal_continuation_segment(mode, session, message, true, turn_failure).await,
+            );
         }
     }
 
@@ -770,7 +820,9 @@ async fn run_session_command_segment(
     // A scheduled goal continuation runs as the turn's model segment; its
     // settled turn participates in the settle loop like any model turn.
     if let Some(message) = execution.continuation_message {
-        return run_goal_continuation_segment(mode, session, message, turn_failure).await;
+        return Ok(
+            run_goal_continuation_segment(mode, session, message, false, turn_failure).await,
+        );
     }
     Ok(false)
 }
@@ -785,15 +837,16 @@ async fn run_goal_continuation_segment(
     mode: &AcpModeState,
     session: &Arc<AcpSession>,
     message: uh_types::session::CustomMessage,
+    minted: bool,
     turn_failure: &mut Option<String>,
-) -> anyhow::Result<bool> {
+) -> bool {
     session.run_pre_turn_compaction(mode).await;
-    if let Err(error) = mode.engine.session.prompt_injected_message(&message).await {
+    if let Err(error) = prompt_goal_continuation(mode, session, &message, minted).await {
         *turn_failure = Some(format!("{error:#}"));
-        return Ok(false);
+        return false;
     }
     mode.engine.session.agent().wait_for_idle().await;
-    Ok(true)
+    true
 }
 
 /// Publish what a session command answered: its shown result rows (the

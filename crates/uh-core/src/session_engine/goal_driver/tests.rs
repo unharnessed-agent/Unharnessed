@@ -1521,3 +1521,42 @@ fn pending_continuation_never_re_arms() {
     driver.clear(&mut session).unwrap();
     assert!(!driver.pending_continuation());
 }
+
+/// An expired command wait must not bypass either refusal window or wake
+/// an inactive goal. With no refusal window it remains immediately due.
+#[test]
+fn owed_wake_waits_out_the_refusal_windows() {
+    let mut session = persisted_session();
+    let mut driver = GoalDriver::new();
+    driver.start(&mut session, "work", None).unwrap();
+    let now = now_millis();
+    driver.owed_continuation = true;
+    driver.command_wait_until_ms = now.saturating_sub(1);
+    assert_eq!(driver.owed_continuation_wake_at(), Some(now - 1));
+    driver.no_progress_backoff_until_ms = now + 10_000;
+    assert_eq!(driver.owed_continuation_wake_at(), Some(now + 10_000));
+    driver.parked_refusal_until_ms = now + 20_000;
+    assert_eq!(driver.owed_continuation_wake_at(), Some(now + 20_000));
+    driver.pause(&mut session, "Paused by user").unwrap();
+    assert_eq!(driver.owed_continuation_wake_at(), None);
+}
+
+/// A failed replacement must preserve the completed goal's command cleanup.
+/// A file in place of the session directory fails even with elevated rights.
+#[test]
+fn failed_start_keeps_the_completed_goal_cleanup_obligation() {
+    let dir = tempfile::tempdir().unwrap();
+    let session_dir = dir.path().join("session");
+    let mut session = SessionManager::in_memory(dir.path());
+    session.materialize_session_file(Some(session_dir.clone()));
+    let mut driver = GoalDriver::new();
+    driver.start(&mut session, "first", None).unwrap();
+    driver.complete(&mut session).unwrap();
+    std::fs::remove_dir_all(&session_dir).unwrap();
+    std::fs::write(&session_dir, "not a directory").unwrap();
+    assert!(driver.start(&mut session, "second", None).is_err());
+    assert!(
+        driver.take_completed(),
+        "the completed goal's leftover commands still need stopping"
+    );
+}

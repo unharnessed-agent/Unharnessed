@@ -40,6 +40,8 @@ pub struct SessionCommandParams<'a> {
     pub api_key: Option<String>,
     /// The session's autonomous runtime state, held by the host runtime.
     pub autonomous: &'a mut AutonomousRuntimeState,
+    /// The host turn's cancellation signal for manual compaction.
+    pub abort: Option<&'a uh_agent::abort::AbortSignal>,
 }
 
 /// A completed compaction to persist: the session record plus the
@@ -250,7 +252,12 @@ async fn execute_compact(
     let instructions = (!command.args.is_empty()).then_some(command.args.as_str());
     let outcome = engine
         .session
-        .compact(instructions, params.model, params.api_key.clone(), None)
+        .compact(
+            instructions,
+            params.model,
+            params.api_key.clone(),
+            params.abort,
+        )
         .await
         .map_err(|error| format!("{error:#}"))?;
     match outcome {
@@ -491,6 +498,7 @@ mod tests {
                 model: &scripted_model(),
                 api_key: None,
                 autonomous: &mut autonomous,
+                abort: None,
             },
             &command("autonomous", "on --max-turns 5"),
             &mut execution,

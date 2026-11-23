@@ -325,6 +325,7 @@ pub async fn execute_compaction(
             request,
             options.summary_delta.clone(),
             "Summarization failed",
+            options.abort,
         )
         .await
     };
@@ -348,6 +349,7 @@ pub async fn execute_compaction(
             // exact committed summary.
             None,
             "Turn prefix summarization failed",
+            options.abort,
         )
         .await?;
         Ok(Some(slice))

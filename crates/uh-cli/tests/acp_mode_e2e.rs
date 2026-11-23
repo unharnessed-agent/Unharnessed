@@ -32,7 +32,7 @@ use serde_json::{json, Value};
 /// child process (its cwd), so it is held on the struct.
 struct AcpChild {
     child: Child,
-    stdin: std::process::ChildStdin,
+    stdin: Option<std::process::ChildStdin>,
     lines: Receiver<String>,
     next_id: u64,
     /// Held (never read) so the child's cwd directory outlives the process:
@@ -65,7 +65,7 @@ impl AcpChild {
         });
         AcpChild {
             child,
-            stdin,
+            stdin: Some(stdin),
             lines,
             next_id: 0,
             _home: home,
@@ -93,8 +93,9 @@ impl AcpChild {
     fn send(&mut self, frame: &Value) {
         let mut line = serde_json::to_string(&frame).unwrap();
         line.push('\n');
-        self.stdin.write_all(line.as_bytes()).unwrap();
-        self.stdin.flush().unwrap();
+        let stdin = self.stdin.as_mut().expect("stdin open");
+        stdin.write_all(line.as_bytes()).unwrap();
+        stdin.flush().unwrap();
     }
 
     fn request(&mut self, method: &str, params: &Value) -> u64 {
@@ -922,6 +923,171 @@ fn compaction_metas(updates: &[Value]) -> Vec<Value> {
             Some(meta["compaction"].clone()).filter(|value| !value.is_null())
         })
         .collect()
+}
+
+// Cancellation failures: a stopped model or summarizer must not restart,
+// close must answer after the cancelled prompt, EOF must exit, and a cancel
+// must leave the next prompt usable. Synchronize on wire events, not sleeps.
+#[derive(Clone, Copy, Debug)]
+enum StopTurn {
+    Cancel,
+    Close,
+    Eof,
+}
+
+fn cancellation_client(mut script: Value) -> (AcpChild, Value) {
+    script["contextWindow"] = json!(20000);
+    script["maxTokens"] = json!(2000);
+    let mut client = spawn_with_compaction_settings(&["--mode", "acp"], &script, 1, 10);
+    let init = client.request("initialize", &initialize_params());
+    client.wait_response(init, TIMEOUT);
+    let new = client.request("session/new", &json!({}));
+    let (response, _) = client.wait_response(new, TIMEOUT);
+    (client, response["result"]["sessionId"].clone())
+}
+
+fn cancellation_prompt(client: &mut AcpChild, session: &Value, text: &str) -> u64 {
+    client.request(
+        "session/prompt",
+        &json!({"sessionId": session, "prompt": [{"type": "text", "text": text}]}),
+    )
+}
+
+fn wait_cancellation_phase(client: &AcpChild, compacting: bool) {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let line = client
+            .lines
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("the model/compaction must start before cancellation");
+        let frame: Value = serde_json::from_str(&line).unwrap();
+        let update = &frame["params"]["update"];
+        if (compacting && update["_meta"]["unharnessed"]["usage"]["compacting"] == true)
+            || (!compacting && update["sessionUpdate"] == "agent_message_chunk")
+        {
+            return;
+        }
+        assert!(
+            frame.get("result").is_none() && frame.get("error").is_none(),
+            "the prompt settled before reaching the required phase: {frame}"
+        );
+    }
+}
+
+fn stop_cancellation_turn(client: &mut AcpChild, session: &Value, prompt: u64, stop: StopTurn) {
+    let close = match stop {
+        StopTurn::Cancel => {
+            client.notify("session/cancel", &json!({"sessionId": session}));
+            None
+        }
+        StopTurn::Close => Some(client.request("session/close", &json!({"sessionId": session}))),
+        StopTurn::Eof => {
+            drop(client.stdin.take());
+            None
+        }
+    };
+    let (answer, updates) = client.wait_response(prompt, Duration::from_secs(5));
+    assert_eq!(
+        answer["result"]["stopReason"], "cancelled",
+        "{stop:?}: {answer}"
+    );
+    let text: String = updates
+        .iter()
+        .filter_map(|frame| frame["params"]["update"]["content"]["text"].as_str())
+        .collect();
+    assert!(
+        !text.contains("must not run"),
+        "{stop:?} started a model request after cancellation: {updates:?}"
+    );
+    if let Some(close) = close {
+        let (answer, _) = client.wait_response(close, Duration::from_secs(5));
+        assert_eq!(answer["result"], json!({}));
+    }
+    if matches!(stop, StopTurn::Eof) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = client.child.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            assert!(Instant::now() < deadline, "EOF did not stop the process");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    eprintln!("{stop:?}: prompt {prompt} cancelled without restarting the model");
+}
+
+#[test]
+fn acp_cancel_close_and_eof_stop_streaming() {
+    for stop in [StopTurn::Cancel, StopTurn::Close, StopTurn::Eof] {
+        let (mut client, session) = cancellation_client(json!({
+            "responses": ["in flight ".repeat(1000), "after"], "tokensPerSecond": 1000
+        }));
+        let prompt = cancellation_prompt(&mut client, &session, "work");
+        wait_cancellation_phase(&client, false);
+        client.notify("session/cancel", &json!({"sessionId": "wrong session"}));
+        let wrong_close = client.request("session/close", &json!({"sessionId": "wrong session"}));
+        let (answer, _) = client.wait_response(wrong_close, TIMEOUT);
+        assert!(answer.get("error").is_some());
+        stop_cancellation_turn(&mut client, &session, prompt, stop);
+        if matches!(stop, StopTurn::Cancel) {
+            client.notify("session/cancel", &json!({"sessionId": session}));
+            let next = cancellation_prompt(&mut client, &session, "again");
+            let (answer, updates) = client.wait_response(next, TIMEOUT);
+            assert_eq!(answer["result"]["stopReason"], "end_turn");
+            let text: String = updates
+                .iter()
+                .filter_map(|frame| frame["params"]["update"]["content"]["text"].as_str())
+                .collect();
+            assert_eq!(text, "after");
+        }
+    }
+}
+
+#[test]
+fn acp_cancel_close_and_eof_stop_boundary_compaction() {
+    for stop in [StopTurn::Cancel, StopTurn::Close, StopTurn::Eof] {
+        let (mut client, session) = cancellation_client(json!({"responses": [
+            {"text": "word ".repeat(10000), "delayMs": 20},
+            {"text": "summary", "delayMs": 15000}, "must not run"
+        ]}));
+        let prompt = cancellation_prompt(&mut client, &session, "/goal keep working");
+        wait_cancellation_phase(&client, true);
+        stop_cancellation_turn(&mut client, &session, prompt, stop);
+    }
+}
+
+#[test]
+fn acp_cancel_close_and_eof_stop_pre_turn_compaction() {
+    for stop in [StopTurn::Cancel, StopTurn::Close, StopTurn::Eof] {
+        let (mut client, session) = cancellation_client(json!({"responses": [
+            {"text": "word ".repeat(10000), "delayMs": 20},
+            {"stopReason": "error", "errorMessage": "intentional summary failure"},
+            {"text": "summary", "delayMs": 15000}, "must not run"
+        ]}));
+        let seed = cancellation_prompt(&mut client, &session, "seed oversized context");
+        let (answer, updates) = client.wait_response(seed, TIMEOUT);
+        assert_eq!(answer["result"]["stopReason"], "end_turn");
+        assert_eq!(compaction_metas(&updates), vec![json!({})]);
+        let prompt = cancellation_prompt(&mut client, &session, "work");
+        wait_cancellation_phase(&client, true);
+        stop_cancellation_turn(&mut client, &session, prompt, stop);
+    }
+}
+
+#[test]
+fn acp_cancel_close_and_eof_stop_manual_compaction() {
+    for stop in [StopTurn::Cancel, StopTurn::Close, StopTurn::Eof] {
+        let (mut client, session) = cancellation_client(json!({"responses": [
+            {"text": "word ".repeat(1000), "delayMs": 20},
+            {"text": "summary", "delayMs": 15000}, "must not run"
+        ]}));
+        let seed = cancellation_prompt(&mut client, &session, "seed context");
+        client.wait_response(seed, TIMEOUT);
+        let prompt = cancellation_prompt(&mut client, &session, "/compact");
+        wait_cancellation_phase(&client, true);
+        stop_cancellation_turn(&mut client, &session, prompt, stop);
+    }
 }
 
 /// The threshold arm on the ACP turn path: a settled turn whose usage
