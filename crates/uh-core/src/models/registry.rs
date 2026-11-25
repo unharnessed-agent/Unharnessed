@@ -436,7 +436,8 @@ impl ModelRegistry {
         }
 
         let credentials = self.prime_credentials();
-        let mut built_in = self.load_built_in_models(&result, credentials.as_ref());
+        let keys = super::catalog_chain::provider_keys(&mut self.auth, &self.catalog);
+        let mut built_in = self.load_built_in_models(&result, credentials.as_ref(), &keys);
         built_in.extend(private_models.into_values());
         self.models = Self::merge_custom_models(built_in, result.models);
         self.apply_subscription_model_adaptations();
@@ -582,15 +583,17 @@ impl ModelRegistry {
     /// Built-ins through the no-cold-start chain (validated disk snapshot |
     /// bundled asset | compiled fallback), merged with the credentialed
     /// live Prime Inference snapshot for `credentials` — TS
-    /// `loadBuiltInModels` over the provider catalog + `livePrimeInferenceModels`.
+    /// `loadBuiltInModels` over the provider catalog + `livePrimeInferenceModels`
+    /// — and with the live model list of each provider in `keys`.
     fn load_built_in_models(
         &self,
         custom: &CustomModelsResult,
         credentials: Option<&uh_models::PrimeCredentials>,
+        keys: &[uh_models::ProviderKey],
     ) -> Vec<Model> {
         // The live catalog does not list the Google Antigravity
         // subscription: its models are the compiled ones.
-        let mut models = self.catalog.resolve(credentials);
+        let mut models = self.catalog.resolve_with_keys(credentials, keys);
         if !models
             .iter()
             .any(|model| model.provider == crate::auth::GOOGLE_ANTIGRAVITY_PROVIDER_ID)
@@ -681,6 +684,8 @@ impl ModelRegistry {
         {
             self.catalog.refresh_openrouter(force).await;
         }
+        let keys = super::catalog_chain::provider_keys(&mut self.auth, &self.catalog);
+        self.catalog.refresh_provider_models(&keys, force).await;
         self.load_models();
         self.refresh_private_prime_inference_authorization(
             previous_ids,

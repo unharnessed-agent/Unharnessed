@@ -24,6 +24,13 @@ Port of the TS catalog client (branch `feat/catalog-client`:
   `scripts/sync-model-additions.py`) extends whichever layer served; same
   schema and pinning, fetched with the catalog, and a model the catalog
   lists is always the catalog's.
+- Provider model lists: for each provider the user holds an API key for
+  (one compiled transport with a concrete base URL, a known listing
+  endpoint; not the OAuth subscriptions nor the providers with their own
+  live list), the provider's `/models` read with that key; the chat models
+  the layers above do not know are appended, each built from its catalog
+  sibling (same transport, the listed name and limits). Scope-keyed disk
+  cache per provider (HMAC-SHA256 of the key), 401/403 clears that scope.
 - Transport pinning: every remote model must match a compiled
   `(provider, api, baseUrl)` tuple; catalog data never carries request
   headers.
@@ -66,6 +73,9 @@ Port of the TS catalog client (branch `feat/catalog-client`:
   build_prime_inference_models, merge_prime_inference_models,
   parse_prime_inference_model_catalog, is_private_prime_inference_model_id,
   scope_key, PRIME_INFERENCE_BASE_URL}`
+- `ProviderKey` (the key `ModelCatalog::resolve_with_keys` and
+  `ModelCatalog::refresh_provider_models` take, for the providers
+  `ModelCatalog::listed_providers` names)
 - `offline::is_catalog_offline`
 
 ## Dependencies (direction compliance)

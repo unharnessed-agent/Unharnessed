@@ -2459,6 +2459,7 @@ dependencies = [
 name = "uh-models"
 version = "0.9.8"
 dependencies = [
+ "futures",
  "hex",
  "hmac",
  "reqwest",
