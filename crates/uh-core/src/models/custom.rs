@@ -426,7 +426,14 @@ pub fn load_custom_models(
                 .or_else(|| provider_config.base_url.clone())
                 .or_else(|| defaults.as_ref().map(|(_, url)| url.clone()));
             let Some(base_url) = base_url else { continue };
-            let compat = merge_compat(None, compat_from_value(provider_config.compat.as_ref()));
+            // Provider compat first, then the model's own compat on top
+            // (TS: mergeCompat(providerConfig.compat, modelDef.compat)).
+            let provider_compat =
+                merge_compat(None, compat_from_value(provider_config.compat.as_ref()));
+            let compat = match compat_from_value(model_def.compat.as_ref()) {
+                Some(model_compat) => merge_compat(provider_compat.as_ref(), Some(model_compat)),
+                None => provider_compat,
+            };
             result.models.push(Model {
                 id: model_def.id.clone(),
                 name: model_def
