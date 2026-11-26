@@ -450,7 +450,13 @@ Dependencies go one way, from `uh-types` up to `uh-cli`. Each crate's README sta
 curl -fsSL https://unharnessed.dev/install.sh | sh
 ```
 
-[`install.sh`](install.sh) downloads the latest release's build for your machine, checks its SHA-256, puts it in `~/.local/share/unharnessed/<version>/`, links `~/.local/bin/unharnessed` to it and builds the kernel. Then `unharnessed`, in a project's folder, opens the terminal UI. The same command updates; `... | sh -s -- --version <v>` installs one release, `... | sh -s -- --uninstall` removes the agent and keeps `~/.unharnessed` (your conversations, keys and settings). It edits no shell file: when `~/.local/bin` is not on your `PATH`, it prints the line that adds it.
+**Terminal** (Windows, in PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/unharnessed-agent/Unharnessed/main/install.ps1 | iex
+```
+
+[`install.sh`](install.sh) downloads the latest release's build for your machine, checks its SHA-256, puts it in `~/.local/share/unharnessed/<version>/`, links `~/.local/bin/unharnessed` to it and builds the kernel. Then `unharnessed`, in a project's folder, opens the terminal UI. The same command updates; `... | sh -s -- --version <v>` installs one release, `... | sh -s -- --uninstall` removes the agent and keeps `~/.unharnessed` (your conversations, keys and settings). It edits no shell file: when `~/.local/bin` is not on your `PATH`, it prints the line that adds it. On Windows, [`install.ps1`](install.ps1) does the same in `%LOCALAPPDATA%\unharnessed\<version>\`, points the junction `%LOCALAPPDATA%\unharnessed\current` to it and puts that on your user `PATH`; `& ([scriptblock]::Create((irm <url>))) -Uninstall` removes it.
 
 **VS Code**: install [Unharnessed Agent](https://marketplace.visualstudio.com/items?itemName=Unharnessed.unharnessed-agent) from the Marketplace, open the panel and sign in. The agent binary ships inside the extension.
 
@@ -486,4 +492,4 @@ Credentials come from `~/.unharnessed/auth.json` (written by the sign-ins) or th
 - `cd vscode && npm run typecheck`: the extension's types. F5 opens an Extension Development Host with `UNHARNESSED_BIN` pointing at the debug binary.
 - `cd vscode && npm run test:e2e`: drives a real VS Code through each scenario of `test/e2e/run.mjs` with the faux provider (`UNHARNESSED_E2E_ONLY=<name>` runs one).
 - `UNHARNESSED_E2E_VSIX=<the .vsix> node test/e2e/run.mjs` (from `vscode/`): the same scenarios on a packaged `.vsix`, installed by VS Code.
-- A pushed tag `vscode-v<version>` releases the extension and the terminal's archives: [`extension-release.yml`](.github/workflows/extension-release.yml) builds the `.vsix` of macOS, Linux and Windows and the terminal's `unharnessed-<target>.tar.gz` of macOS and Linux (installed on its runner by `install.sh`), attaches them to a GitHub release and, with the repository secret `VSCE_PAT`, publishes the `.vsix` files to the Marketplace. Run by hand, the workflow only builds them. `unharnessed.dev/install.sh` redirects to `install.sh` on `main`, which installs the latest release.
+- A pushed tag `vscode-v<version>` releases the extension and the terminal's archives: [`extension-release.yml`](.github/workflows/extension-release.yml) builds the `.vsix` and the terminal's `unharnessed-<target>.tar.gz` of macOS, Linux and Windows (installed on its runner by `install.sh`, or `install.ps1`), attaches them to a GitHub release and, with the repository secret `VSCE_PAT`, publishes the `.vsix` files to the Marketplace. Run by hand, the workflow only builds them. `unharnessed.dev/install.sh` redirects to `install.sh` on `main`, which installs the latest release.

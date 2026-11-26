@@ -5,10 +5,11 @@
 # and attaches them to a GitHub release. The tag must name the version of
 # vscode/package.json.
 #
-# The same agent is archived for the terminal on macOS and Linux
+# The same agent is archived for the terminal
 # (scripts/unharnessed-package.sh): unharnessed-<target>.tar.gz and its
-# .sha256, attached to the same release, which install.sh downloads. Each
-# archive is installed on its runner before it is kept.
+# .sha256, attached to the same release, which install.sh downloads (on
+# Windows, install.ps1). Each archive is installed on its runner before it
+# is kept.
 #
 # Run by hand (workflow_dispatch) it is a rehearsal: the same files are
 # built and kept as artifacts of the run, and nothing is published.
@@ -59,7 +60,6 @@ jobs:
           - target: linux-arm64
             rust: aarch64-unknown-linux-musl
             runs-on: ubuntu-24.04-arm
-          # The extension only: the terminal's install.sh is macOS and Linux.
           - target: win32-x64
             rust: x86_64-pc-windows-msvc
             runs-on: windows-2022
@@ -98,9 +98,10 @@ jobs:
           name: vsix-${{ matrix.target }}
           path: vscode/*.vsix
           if-no-files-found: error
-      # The agent is built already: this archives it with what ships beside it.
+      # The agent is built already: this archives it with what ships beside it
+      # (in Git Bash on Windows).
       - name: Build the terminal's archive
-        if: runner.os != 'Windows'
+        shell: bash
         run: scripts/unharnessed-package.sh ${{ matrix.target }} terminal
       # darwin-x64 is cross-built: its runner would ask for the darwin-arm64 archive.
       - name: Install the archive, and ask the installed agent its version
@@ -113,8 +114,26 @@ jobs:
             echo "::error::the installed agent says version $said, vscode/package.json is $version"
             exit 1
           fi
+      # In Windows PowerShell 5.1, which `irm ... | iex` runs in on a fresh Windows.
+      - name: Install the archive with install.ps1, and ask the installed agent its version
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $env:UNHARNESSED_INSTALL_FROM = "$PWD\terminal"
+          .\install.ps1 -NoKernel
+          if ($LASTEXITCODE) { exit 1 }
+          $version = node -p "require('./vscode/package.json').version"
+          $current = "$env:LOCALAPPDATA\unharnessed\current"
+          $said = & "$current\unharnessed.exe" --version
+          if ($said -ne $version) {
+            Write-Output "::error::the installed agent says version $said, vscode/package.json is $version"
+            exit 1
+          }
+          if (([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') -notcontains $current) {
+            Write-Output "::error::install.ps1 did not put $current on the user PATH"
+            exit 1
+          }
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        if: runner.os != 'Windows'
         with:
           name: terminal-${{ matrix.target }}
           path: terminal/unharnessed-*

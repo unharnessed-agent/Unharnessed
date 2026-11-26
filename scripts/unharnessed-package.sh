@@ -1,12 +1,12 @@
 #!/bin/sh
 # Builds the archive install.sh installs: the terminal app for one platform.
 #   scripts/unharnessed-package.sh [target] [out-dir]
-# `target` is one of: darwin-arm64 darwin-x64 linux-x64 linux-arm64 (default:
-# this machine); `out-dir` defaults to target/package/. The agent is built for it with
+# `target` is one of: darwin-arm64 darwin-x64 linux-x64 linux-arm64 win32-x64
+# (default: this machine; Windows builds under Git Bash, for install.ps1); `out-dir` defaults to target/package/. The agent is built for it with
 # cargo, like vscode/scripts/package.mjs does (a platform other than this
 # machine's needs its Rust target and linker), and archived with what it looks
 # for beside itself, the same files the extension ships in its bin/:
-#   unharnessed/unharnessed            the agent
+#   unharnessed/unharnessed            the agent (unharnessed.exe on Windows)
 #   unharnessed/package.json           the version `unharnessed --version` says
 #   unharnessed/unharnessed-runtime/   the kernel's Python package
 #   unharnessed/skills/                the built-in skills
@@ -25,6 +25,7 @@ this_machine() {
   case "$(uname -s)" in
     Darwin) system=darwin ;;
     Linux) system=linux ;;
+    MINGW* | MSYS* | CYGWIN*) system=win32 ;;
     *) echo "no archive is built on $(uname -s)" >&2; exit 1 ;;
   esac
   case "$(uname -m)" in
@@ -41,7 +42,12 @@ case "$target" in
   darwin-x64) triple=x86_64-apple-darwin ;;
   linux-x64) triple=x86_64-unknown-linux-musl ;;
   linux-arm64) triple=aarch64-unknown-linux-musl ;;
-  *) echo "unknown target $target; one of: darwin-arm64 darwin-x64 linux-x64 linux-arm64" >&2; exit 1 ;;
+  win32-x64) triple=x86_64-pc-windows-msvc ;;
+  *) echo "unknown target $target; one of: darwin-arm64 darwin-x64 linux-x64 linux-arm64 win32-x64" >&2; exit 1 ;;
+esac
+case "$target" in
+  win32-*) exe=unharnessed.exe ;;
+  *) exe=unharnessed ;;
 esac
 
 version=${UNHARNESSED_PACKAGE_VERSION:-$(sed -n 's/^  "version": "\(.*\)",$/\1/p' "$repo/vscode/package.json" | head -n 1)}
@@ -53,10 +59,10 @@ if [ -z "$built" ]; then
   host=$(cd "$repo" && rustc -vV | sed -n 's/^host: //p')
   if [ "$triple" = "$host" ]; then
     (cd "$repo" && cargo build --release --locked -p uh-cli --bin unharnessed)
-    built=$repo/target/release/unharnessed
+    built=$repo/target/release/$exe
   else
     (cd "$repo" && cargo build --release --locked -p uh-cli --bin unharnessed --target "$triple")
-    built=$repo/target/$triple/release/unharnessed
+    built=$repo/target/$triple/release/$exe
   fi
 fi
 [ -f "$built" ] || { echo "no binary at $built" >&2; exit 1; }
@@ -67,8 +73,8 @@ stage=$(mktemp -d "${TMPDIR:-/tmp}/uh-package.XXXXXX")
 trap 'rm -rf "$stage"' EXIT
 app=$stage/unharnessed
 mkdir "$app"
-cp "$built" "$app/unharnessed"
-chmod 755 "$app/unharnessed"
+cp "$built" "$app/$exe"
+chmod 755 "$app/$exe"
 cp "$repo/LICENSE" "$app/LICENSE"
 printf '{"name":"unharnessed","version":"%s"}\n' "$version" > "$app/package.json"
 (cd "$repo" && git ls-files -- unharnessed-runtime/pyproject.toml unharnessed-runtime/src skills) | while IFS= read -r file; do
