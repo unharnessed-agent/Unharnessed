@@ -50,7 +50,7 @@ platform() {
   case "$(uname -s)" in
     Darwin) system=darwin ;;
     Linux) system=linux ;;
-    MINGW* | MSYS* | CYGWIN*) fail "on Windows, install with install.ps1 in PowerShell: irm https://raw.githubusercontent.com/$REPOSITORY/main/install.ps1 | iex" ;;
+    MINGW* | MSYS* | CYGWIN*) fail "on Windows, install with install.ps1 in PowerShell: irm https://unharnessed.dev/install.ps1 | iex" ;;
     *) fail "there is no build for $(uname -s)" ;;
   esac
   machine=$(uname -m)

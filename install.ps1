@@ -1,5 +1,5 @@
 # Installs Unharnessed for the terminal on Windows, in PowerShell:
-#   irm https://raw.githubusercontent.com/unharnessed-agent/Unharnessed/main/install.ps1 | iex
+#   irm https://unharnessed.dev/install.ps1 | iex
 # Run again, it updates. It downloads the release's archive for Windows
 # (scripts/unharnessed-package.sh builds it), checks it against its SHA-256,
 # and puts it in a folder of its own, named by its version:
