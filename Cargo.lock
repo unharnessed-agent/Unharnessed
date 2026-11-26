@@ -2383,6 +2383,7 @@ dependencies = [
  "base64",
  "futures",
  "libc",
+ "reqwest",
  "rsa",
  "serde",
  "serde_json",

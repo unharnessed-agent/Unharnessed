@@ -54,6 +54,7 @@ pub(crate) mod provider_login;
 pub(crate) mod public_command;
 pub(crate) mod session_export;
 pub(crate) mod subscription_login;
+pub(crate) mod update;
 
 /// The runtime boundary: everything a mode-runner crate implements to plug
 /// into the `unharnessed` binary, plus the entry point that drives it.

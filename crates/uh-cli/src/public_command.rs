@@ -108,6 +108,7 @@ pub fn handle_public_command(args: &[String]) -> PublicCommandResult {
         "model" => rewrite_nested_command("model", "list", "--list-models", &rest),
         "session" => rewrite_nested_command("session", "export", "--export", &rest),
         "prompt" => handled_with_exit(crate::prompt_command::run_prompt_command(&rest)),
+        "update" => handled_with_exit(crate::update::run(&rest)),
         _ => continue_with(args.clone()),
     }
 }

@@ -17,6 +17,8 @@ tokio = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The latest release, and the installer, for `unharnessed update`.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 # The `@file` image attachments are read as base64 payloads.
 base64 = "0.22"
 

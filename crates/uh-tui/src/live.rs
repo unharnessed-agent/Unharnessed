@@ -117,6 +117,8 @@ pub struct Start {
     /// Opens an address in the user's browser: a port a server of the
     /// agent's listens on.
     pub open: fn(&str),
+    /// Told before the conversation: a newer release, to update to.
+    pub news: Option<String>,
 }
 
 /// What reaches the session: from the terminal, or from the agent.
@@ -288,6 +290,11 @@ impl Session {
             }),
         );
         self.stage = Stage::Starting(id);
+        // Told once, after `initialize` started the conversation from nothing.
+        if let Some(news) = self.start.news.take() {
+            let now = self.now();
+            self.chat.told(now, &news);
+        }
     }
 
     /// The open session's id.

@@ -104,6 +104,7 @@ fn run_interactive(options: &RunOptions) -> i32 {
             .filter(|path| !path.is_empty())
             .map(std::path::PathBuf::from),
         open: open_page,
+        news: crate::update::news(&options.config.agent_dir),
     })
 }
 

@@ -81,6 +81,7 @@ and prints the per-layer breakdown (cached static layers, then the dynamic tail)
         "--cwd <dir>         Assemble for this working directory (default: current)",
         "--json              Print segments and prompt as JSON",
     ]),
+    CommandSpec::new(&["update"], "update", "Update to the latest release"),
 ];
 
 /// Command names that once existed and now print removal guidance.
