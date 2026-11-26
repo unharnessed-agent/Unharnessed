@@ -444,7 +444,7 @@ Dependencies go one way, from `uh-types` up to `uh-cli`. Each crate's README sta
 
 ## Install
 
-**Terminal** (macOS):
+**Terminal** (macOS and Linux):
 
 ```bash
 curl -fsSL https://unharnessed.dev/install.sh | sh
@@ -486,4 +486,4 @@ Credentials come from `~/.unharnessed/auth.json` (written by the sign-ins) or th
 - `cd vscode && npm run typecheck`: the extension's types. F5 opens an Extension Development Host with `UNHARNESSED_BIN` pointing at the debug binary.
 - `cd vscode && npm run test:e2e`: drives a real VS Code through each scenario of `test/e2e/run.mjs` with the faux provider (`UNHARNESSED_E2E_ONLY=<name>` runs one).
 - `UNHARNESSED_E2E_VSIX=<the .vsix> node test/e2e/run.mjs` (from `vscode/`): the same scenarios on a packaged `.vsix`, installed by VS Code.
-- A pushed tag `vscode-v<version>` releases the extension and the terminal's archives: [`extension-release.yml`](.github/workflows/extension-release.yml) builds, for macOS on Apple silicon and on Intel, the `.vsix` and the terminal's `unharnessed-<target>.tar.gz` (installed on its runner by `install.sh`), attaches them to a GitHub release and, with the repository secret `VSCE_PAT`, publishes the `.vsix` files to the Marketplace. Run by hand, the workflow only builds them. `unharnessed.dev/install.sh` redirects to `install.sh` on `main`, which installs the latest release.
+- A pushed tag `vscode-v<version>` releases the extension and the terminal's archives: [`extension-release.yml`](.github/workflows/extension-release.yml) builds the `.vsix` of macOS, Linux and Windows and the terminal's `unharnessed-<target>.tar.gz` of macOS and Linux (installed on its runner by `install.sh`), attaches them to a GitHub release and, with the repository secret `VSCE_PAT`, publishes the `.vsix` files to the Marketplace. Run by hand, the workflow only builds them. `unharnessed.dev/install.sh` redirects to `install.sh` on `main`, which installs the latest release.

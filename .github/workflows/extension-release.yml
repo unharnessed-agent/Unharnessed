@@ -1,11 +1,11 @@
 # Releases the VS Code extension, and the terminal's archives with it.
 #
-# A pushed tag vscode-v<version> builds the .vsix of macOS, on Apple silicon
-# and on Intel (vscode/scripts/package.mjs), publishes them to the VS Code Marketplace
+# A pushed tag vscode-v<version> builds the .vsix of macOS, Linux and Windows
+# (vscode/scripts/package.mjs), publishes them to the VS Code Marketplace
 # and attaches them to a GitHub release. The tag must name the version of
 # vscode/package.json.
 #
-# The same agent is archived for the terminal
+# The same agent is archived for the terminal on macOS and Linux
 # (scripts/unharnessed-package.sh): unharnessed-<target>.tar.gz and its
 # .sha256, attached to the same release, which install.sh downloads. Each
 # archive is installed on its runner before it is kept.
@@ -53,6 +53,16 @@ jobs:
           - target: darwin-x64
             rust: x86_64-apple-darwin
             runs-on: macos-15
+          - target: linux-x64
+            rust: x86_64-unknown-linux-musl
+            runs-on: ubuntu-24.04
+          - target: linux-arm64
+            rust: aarch64-unknown-linux-musl
+            runs-on: ubuntu-24.04-arm
+          # The extension only: the terminal's install.sh is macOS and Linux.
+          - target: win32-x64
+            rust: x86_64-pc-windows-msvc
+            runs-on: windows-2022
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
