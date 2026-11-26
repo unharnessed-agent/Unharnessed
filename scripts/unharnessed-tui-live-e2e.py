@@ -23,8 +23,10 @@ models, searched and picked, its effort the levels, set with the arrows and
 with a click; a new conversation starts on another agent, the saved ones are
 listed, opened (one whose agent is still leaving it too), filtered and
 deleted, and `--resume` alone opens on them; a server's row on the panel
-opens its port in the browser and stops it, and the wheel scrolls a panel
-with more rows than the screen; a goal shows on the message box with its
+opens its port in the browser and stops it, the wheel scrolls a panel
+with more rows than the screen, and the panel closes to a rail and opens
+again; `/compact` leaves a line across the conversation that opens on the
+summary, and comes back with it; a goal shows on the message box with its
 time, Esc makes it wait, it comes back with its conversation, goes on at a
 click, and is ended at another; a `/` first in the message offers the
 agent's commands, the prompt templates and the skills, then the screen's
@@ -38,7 +40,10 @@ is added by a token and signed out of; groups of instructions are made,
 changed and deleted; a message sent is brought back, changed and sent again,
 the conversation gone back to before it; images dropped on the terminal or
 pasted from the clipboard go with a message, and what is no image, one too
-many, or any while they are blocked, is refused.
+many, or any while they are blocked, is refused; Cmd+V attaches the
+clipboard's image, a file copied in Finder comes as the file, a path VS
+Code's terminal types for a dropped file and a screenshot's thumbnail are
+attached, each image by its name.
 
 usage: uv run scripts/unharnessed-tui-live-e2e.py <out-dir>
 
@@ -1095,6 +1100,28 @@ def scenario_kernel(state):
     text = term.settles("after the server stopped", 1.0)
     check("kernel: the server stops, its row leaves the panel, and the agent says what it makes of it",
           gone and woken and not listening(port) and "a background command ended" in text and "v0" in text, text)
+
+    def worked():
+        """How far the line the turn's work folds into runs, in cells."""
+        row = next(row for row in term.rows() if "Worked for" in row)
+        return row.rindex("─") + 1
+
+    before = worked()
+    column, row = term.find("»")
+    term.click(column, row, "on the mark at the panel's top right")
+    text = term.settles("the panel closed")
+    rail = term.find("«")
+    check("kernel: the mark at the panel's top closes it to a rail at the screen's edge, where the mark that opens it "
+          "is, and the conversation takes the panel's room",
+          rail == (column, row) and "REPL variables" not in text and "v0" not in text and worked() > before + 20,
+          (rail, before, worked(), text))
+    term.click(column, row + 8, "on the rail, under its mark")
+    text = term.settles("the panel open again")
+    check("kernel: a click anywhere on the rail opens the panel again, the conversation back to its width",
+          "REPL variables" in text and "v0" in text and term.find("«") is None and worked() == before, text)
+    term.keys("\x0b", "Ctrl+K")
+    text = term.settles("the panel closed by the keys")
+    check("kernel: Ctrl+K closes it too", term.find("«") == (column, row) and "REPL variables" not in text, text)
     term.keys("\x11", "Ctrl+Q")
     check("kernel: the session leaves", term.exit(timeout=60) == 0 and term.given_back())
     done = subprocess.run([BIN, "--tui-replay", str(record), "--at", "999", "--size", "120x40"],
@@ -1583,6 +1610,9 @@ def scenario_servers(state):
           flipped and toggles == [("pdf-reports", False)] and not switched(term, "Write PDF reports.")
           and re.search(r"pdf-reports +Write PDF reports\.$", text, re.M) is not None, (toggles, text))
 
+    # The rows stand apart: what adds a folder is below the screen's end.
+    term.keys("\x1b[6~", "Page Down")
+    term.waits("+ Add a folder", "what adds a folder")
     term.click_on("+ Add a folder", "on what adds a folder")
     term.settles("the folder's field", 0.4)
     term.keys("/nowhere/at/all\r", "a folder that is not there, Enter")
@@ -1808,7 +1838,8 @@ def scenario_images(state):
     tools.mkdir()
     clip = png(2, 2)
     (tools / "clip.png").write_bytes(clip)
-    for name, body in (("osascript", f"printf '«data PNGf{clip.hex().upper()}»\\n'"),
+    (tools / "clip.said").write_text(f"«data PNGf{clip.hex().upper()}»\n")
+    for name, body in (("osascript", f"cat '{tools / 'clip.said'}'"),
                        ("wl-paste", f"cat '{tools / 'clip.png'}'"), ("xclip", f"cat '{tools / 'clip.png'}'")):
         (tools / name).write_text(f"#!/bin/sh\n{body}\n")
         (tools / name).chmod(0o755)
@@ -1851,7 +1882,7 @@ def scenario_images(state):
           first == ["photo.JPG"] and chips() == ([], "") and "doesn't read images" not in term.text(), term.text())
 
     term.keys("\x16", "Ctrl+V")
-    pasted = term.until(lambda: chips()[0] == ["pasted image"], "the clipboard's image on the message box")
+    pasted = term.until(lambda: chips()[0] == ["Image 1"], "the clipboard's image on the message box")
     paste(f"'{shots}/red one.png'", "an image's path, quoted")
     term.until(lambda: len(chips()[0]) == 2, "two images")
     term.keys("what are these?\r", "a message, then Enter")
@@ -1865,8 +1896,8 @@ def scenario_images(state):
           and [(block["mimeType"], base64.b64decode(block["data"])) for block in blocks[1:]]
           == [("image/png", clip), ("image/png", picture)], [dict(block, data=len(block.get("data", ""))) for block in blocks])
     check("images: the message sent shows with its images' names, and the message box has none left",
-          re.search(r"▣ pasted image +▣ red one\.png", text) is not None and chips() == ([], "")
-          and request["_meta"] == {"unharnessedTui": {"images": ["pasted image", "red one.png"]}}, text)
+          re.search(r"▣ Image 1 +▣ red one\.png", text) is not None and chips() == ([], "")
+          and request["_meta"] == {"unharnessedTui": {"images": ["Image 1", "red one.png"]}}, text)
 
     paste(f"'{shots}/photo.JPG'", "an image's path")
     term.until(lambda: chips()[0] == ["photo.JPG"], "the image on the message box")
@@ -1882,7 +1913,7 @@ def scenario_images(state):
     back = chips()[0]
     term.keys("\x1b", "Esc")
     term.leaves("Editing an earlier message", "the message left as it was")
-    check("images: a message brought back to be changed comes with its images", back == ["pasted image", "red one.png"], back)
+    check("images: a message brought back to be changed comes with its images", back == ["Image 1", "red one.png"], back)
     many = " ".join(f"'{shots}/red one.png'" for _ in range(11))
     paste(many, "eleven images at once")
     full = term.waits("A message carries 10 images at most.", "the eleventh refused")
@@ -1892,7 +1923,7 @@ def scenario_images(state):
 
     term.keys("\x13", "Ctrl+S")
     term.waits("Compaction", "the settings")
-    term.keys("\x1b[6~", "Page Down")
+    term.keys("\x1b[6~\x1b[6~", "Page Down, twice")
     term.waits("Block images", "the images' settings")
     term.click_on("Block images", "on Block images")
     term.until(lambda: sets(record, "images.blockImages") == [True] and switched(term, "Block images"), "images blocked")
@@ -1917,8 +1948,138 @@ def scenario_images(state):
                           capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
     trace.note(f"$ unharnessed --tui-replay {record} --at 999 --size 120x40\n{done.stdout}{done.stderr}[exit {done.returncode}]")
     check("images: its recording replays with the images' names",
-          done.returncode == 0 and re.search(r"▣ pasted image +▣ red one\.png", done.stdout) is not None
+          done.returncode == 0 and re.search(r"▣ Image 1 +▣ red one\.png", done.stdout) is not None
           and "▣ photo.JPG" in done.stdout, done.stdout)
+
+
+def scenario_clipboard(state):
+    """How an image could still be missed, listed before the code: Cmd+V on a clipboard of an image alone pastes
+    nothing (the terminal finds no text), or Cmd+V comes as a key; a file copied in Finder brings its icon, or is
+    pasted as its name (VS Code); a name pasted that the clipboard does not hold is lost; the path VS Code's terminal
+    types for a dropped file is written, not attached, or the keys held to see it are lost (`/` opens nothing); a
+    screenshot's thumbnail dropped is cut at the narrow space macOS puts before `PM`, or is written once macOS put it
+    away; an image without a name is called "pasted image"."""
+    trace = Trace("clipboard")
+    home = Home("clipboard", script=ANSWERS)
+    record = OUT / "live-clipboard.rec"
+    shots = home.base / "Desktop"
+    shots.mkdir()
+    captured, red, quoted, held = png(3, 3), png(5, 2), png(2, 5), png(4, 4)
+    capture = shots / "Capture d’écran 2026-11-23 à 20.50.12.png"
+    capture.write_bytes(captured)
+    (shots / "red one.png").write_bytes(red)
+    (shots / "it's.png").write_bytes(quoted)
+    # Where macOS keeps a screenshot while its thumbnail shows; the name has the narrow space it puts before PM.
+    staging = home.base / "T" / "TemporaryItems" / "NSIRD_screencaptureui_Bth1wV"
+    staging.mkdir(parents=True)
+    thumbnail = staging / "Screenshot 2026-11-23 at 8.50.12\u202fPM.png"
+    thumbnail.write_bytes(held)
+    # The clipboard, stood in for: what osascript says of it is in a file, changed as the checks go.
+    tools = home.base / "tools"
+    tools.mkdir()
+    clip = png(2, 2)
+    said = tools / "clip.said"
+    holds = lambda text: said.write_text(text)  # noqa: E731
+    holds(f"«data PNGf{clip.hex().upper()}»\n")
+    (tools / "osascript").write_text(f"#!/bin/sh\ncat '{said}'\n")
+    (tools / "osascript").chmod(0o755)
+    home.env["PATH"] = f"{tools}:{home.env['PATH']}"
+    term = Terminal(trace, home, [], record=record, columns=160)
+    term.waits("Faux Model", "once the session is open")
+    paste = lambda text, label: term.keys(f"\x1b[200~{text}\x1b[201~", label)  # noqa: E731
+
+    def typed(text, label):
+        """What VS Code's terminal writes for a file dropped on it: the path typed, not pasted, in pieces of 50
+        characters 5 ms apart."""
+        trace.note(f"-- typed at once, as VS Code does for a drop: {label}")
+        data = text.encode()
+        for at in range(0, len(data), 50):
+            os.write(term.fd, data[at:at + 50])
+            time.sleep(0.005)
+
+    def chips():
+        rows = term.rows()
+        at = next((at for at, row in enumerate(rows) if "▣" in row and "×" in row), None)
+        if at is None:
+            return [], ""
+        return re.findall(r"▣ (.+?) ×", rows[at]), rows[at + 1].strip()
+
+    def box():
+        """What is written in the message box: its row, the second above the bar."""
+        rows = term.rows()
+        bar = max(at for at, row in enumerate(rows) if row.strip().startswith("Faux Model"))
+        return rows[bar - 2].strip()
+
+    paste("", "Cmd+V on a clipboard of an image alone: the terminal pastes nothing")
+    first = term.until(lambda: chips()[0] == ["Image 1"], "the clipboard's image on the message box")
+    term.keys("\x1b[118;9u", "Cmd+V, reported as a key (the kitty keyboard protocol)")
+    second = term.until(lambda: chips()[0] == ["Image 1", "Image 2"], "a second one")
+    check("clipboard: Cmd+V attaches the clipboard's image when the terminal pastes nothing for it, or reports the key; "
+          "an image without a name is numbered",
+          first and second and "pasted image" not in term.text() and box() == "Ask Unharnessed", (chips(), box()))
+
+    holds(f"file {capture}\n")
+    term.keys("\x16", "Ctrl+V, a screenshot copied in Finder")
+    finder = term.until(lambda: len(chips()[0]) == 3, "the file on the message box")
+    holds(f"file {shots / 'red one.png'}\n")
+    paste("red one.png", "Cmd+V in VS Code of a file copied in Finder: its name pasted")
+    named = term.until(lambda: len(chips()[0]) == 4, "the file on the message box")
+    check("clipboard: a file copied in Finder attaches the file, by its name, whether it comes by Ctrl+V or as its name",
+          finder and named and chips()[0][2:] == [capture.name, "red one.png"] and box() == "Ask Unharnessed",
+          (chips(), box()))
+    holds("")
+    paste("notes.png", "a name the clipboard holds no file of")
+    written = term.until(lambda: box() == "notes.png", "the name written")
+    term.keys("\x16", "Ctrl+V, on a clipboard of text")
+    told = term.waits("The clipboard holds no image.", "why nothing was attached")
+    check("clipboard: a name the clipboard holds no file of is written; Ctrl+V on no image says so",
+          written and told and len(chips()[0]) == 4, (chips(), box()))
+    term.keys("\x15", "Ctrl+U")
+    term.until(lambda: box() == "Ask Unharnessed", "the message emptied")
+
+    term.keys("what are these?\r", "a message, then Enter")
+    answered = term.waits("Answer 1.", "its answer")
+    request = sent(record, "session/prompt")[0]["params"]
+    images = [base64.b64decode(block["data"]) for block in request["prompt"] if block["type"] == "image"]
+    check("clipboard: sent, the images are the clipboard's and the files', and go by their names",
+          answered and images == [clip, clip, captured, red]
+          and request["_meta"] == {"unharnessedTui": {"images": ["Image 1", "Image 2", capture.name, "red one.png"]}},
+          request.get("_meta"))
+
+    typed(f"'{shots}/it\\'s.png'", "a file dropped on VS Code's terminal, quoted as it quotes it")
+    dropped = term.until(lambda: chips()[0] == ["it's.png"], "the image on the message box")
+    check("clipboard: the path VS Code's terminal types for a dropped image attaches it, and nothing is written",
+          dropped and box() == "Ask Unharnessed", (chips(), box()))
+    typed("/nowhere/at/all.png", "a path typed at once that is no file")
+    written = term.until(lambda: box() == "/nowhere/at/all.png", "the path written")
+    term.keys("\x15", "Ctrl+U")
+    term.until(lambda: box() == "Ask Unharnessed", "the message emptied")
+    term.keys("/", "a slash, alone")
+    menu = term.waits("/compact", "the commands offered")
+    term.keys("\x15", "Ctrl+U")
+    term.leaves("/compact", "the commands gone")
+    check("clipboard: what is typed at once and is no image is written as it is, and a key alone still does what it does",
+          written and menu, term.text())
+
+    escaped = str(thumbnail).replace(" ", "\\ ")
+    paste(f"{escaped} ", "a screenshot's thumbnail dropped on the terminal: its path, spaces escaped")
+    shot = term.until(lambda: len(chips()[0]) == 2, "the screenshot on the message box")
+    check("clipboard: a screenshot's thumbnail dropped attaches it by its name, the narrow space before PM kept",
+          shot and chips()[0][1] == thumbnail.name and box() == "Ask Unharnessed", (chips(), box()))
+    gone = staging / "Screenshot 2026-11-23 at 8.51.40\u202fPM.png"
+    paste(str(gone).replace(" ", "\\ "), "a thumbnail macOS has already put away")
+    told = term.waits("was gone before it could be read", "why it was not attached")
+    check("clipboard: a thumbnail macOS put away is said to be gone, its path not written",
+          told and len(chips()[0]) == 2 and box() == "Ask Unharnessed", (chips(), box()))
+    term.keys("\r", "Enter")
+    answered = term.waits("Answer 2.", "its answer")
+    request = sent(record, "session/prompt")[1]["params"]
+    images = [base64.b64decode(block["data"]) for block in request["prompt"] if block["type"] == "image"]
+    check("clipboard: the dropped images go whole, by their names",
+          answered and images == [quoted, held]
+          and request["_meta"] == {"unharnessedTui": {"images": ["it's.png", thumbnail.name]}}, request.get("_meta"))
+    term.keys("\x11", "Ctrl+Q")
+    check("clipboard: the session leaves", term.exit(timeout=60) == 0 and term.given_back())
 
 
 def scenario_market(state):
@@ -1991,6 +2152,69 @@ def scenario_market(state):
     check("market: the session leaves", term.exit(timeout=60) == 0 and term.given_back())
 
 
+# What the faux model answers in the compaction's scenario: two answers; then, for the compaction, the summary and
+# where the turn it cut stood; then an answer after it.
+COMPACT = {"responses": [
+    {"content": [{"type": "text", "text": "First answer. " * 30}]},
+    {"content": [{"type": "text", "text": "Second answer. " * 30}]},
+    {"content": [{"type": "text", "text": "## Goal\n- Say hello.\n\n## Progress\n- The user said hi; the agent answered."}]},
+    {"content": [{"type": "text", "text": "Where the turn stood."}]},
+    {"content": [{"type": "text", "text": "Third answer."}]},
+], "modelName": "Faux Model"}
+
+
+def scenario_compact(state):
+    trace = Trace("compact")
+    home = Home("compact", script=COMPACT)
+    # The agent keeps next to nothing of the conversation as it is: a short one is worth compacting.
+    (home.base / "agent" / "settings.json").write_text(json.dumps({"compaction": {"keepRecentTokens": 1}}))
+    record = OUT / "live-compact.rec"
+    term = Terminal(trace, home, [], record=record)
+    term.waits("Faux Model", "once the session is open")
+    for message, answer in (("hi", "First answer."), ("again", "Second answer.")):
+        term.keys(f"{message}\r", f"{message}, then Enter")
+        term.waits(answer, "its answer", timeout=60)
+        term.settles("the turn over", 1.0)
+    term.keys("/compact\r", "/compact")
+    done = term.waits("tokens summarized", "the conversation compacted", timeout=60)
+    text = term.settles("the compaction over", 1.5)
+    ended = [frame["params"]["update"]["_meta"]["unharnessed"]["compaction"] for frame in received(record, "session/update")
+             if "compaction" in frame["params"]["update"].get("_meta", {}).get("unharnessed", {})]
+    tokens = ended[0]["tokensBefore"] if ended else 0
+    shown = f"{tokens / 1000:.1f}k" if 1000 <= tokens < 10000 else str(tokens)
+    line = re.search(rf"^ *─+  Compacted · {re.escape(shown)} tokens summarized  ─+$", text, re.M)
+    check("compact: /compact ends on a line across the conversation: Compacted, and how many tokens it summarized",
+          done and len(ended) == 1 and line is not None and "Say hello." not in text and "Stopped" not in text, text)
+    term.click_on("Compacted", "on the line")
+    opened = term.waits("Say hello.", "the summary under it")
+    text = term.text()
+    check("compact: a click on the line opens the summary under it",
+          opened and "The user said hi; the agent answered." in text and "## Goal" not in text, text)
+    term.click_on("Compacted", "on the line again")
+    closed = term.leaves("Say hello.", "the summary folded")
+    check("compact: another click folds it", closed and "tokens summarized" in term.text(), term.text())
+    term.keys("go on\r", "a message after it")
+    went = term.waits("Third answer.", "its answer", timeout=60)
+    check("compact: the conversation goes on under the line", went and "tokens summarized" in term.text(), term.text())
+    term.keys("\x03", "Ctrl+C on an empty message box")
+    term.exit()
+    resume = re.search(r"unharnessed --resume ([0-9a-f-]{36})", term.text())
+    if resume is None:
+        check("compact: leaving, it says how to come back", False, term.text())
+        return
+    term = Terminal(trace, home, ["--resume", resume.group(1)])
+    back = term.waits("Third answer.", "the conversation back")
+    text = term.settles("the conversation back, settled", 1.5)
+    check("compact: coming back, the line is where it was, its turn over, not stopped",
+          back and re.search(rf"─+  Compacted · {re.escape(shown)} tokens summarized  ─+", text) is not None
+          and "Stopped" not in text, text)
+    term.click_on("Compacted", "on the line")
+    opened = term.waits("Say hello.", "the summary under it")
+    check("compact: it opens on the summary there too", opened, term.text())
+    term.keys("\x11", "Ctrl+Q")
+    check("compact: the session leaves", term.exit(timeout=60) == 0 and term.given_back())
+
+
 def scenario_refusals(state):
     trace = Trace("refusals")
     home = Home("refusals")
@@ -2016,9 +2240,10 @@ def scenario_refusals(state):
 only = os.environ.get("UNHARNESSED_E2E_ONLY")
 state = {}
 for scenario in (scenario_session, scenario_resume, scenario_launch, scenario_providers, scenario_composer,
-                 scenario_pickers, scenario_history, scenario_kernel, scenario_goal, scenario_slash,
+                 scenario_pickers, scenario_history, scenario_kernel, scenario_compact, scenario_goal, scenario_slash,
                  scenario_settings, scenario_servers, scenario_instructions,
-                 scenario_market, scenario_rewind, scenario_images, scenario_refusals):
+                 scenario_market, scenario_rewind, scenario_images, scenario_clipboard,
+                 scenario_refusals):
     name = scenario.__name__[len("scenario_"):]
     if only and only != name:
         continue

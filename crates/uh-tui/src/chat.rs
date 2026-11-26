@@ -7,9 +7,9 @@
 //! leave it. It reads the frames the VS Code extension reads
 //! (`vscode/src/chat.ts`, `session.ts`, `history.ts`), a part of them for
 //! now: one prompt at a time, the messages sent into its turn, the turns
-//! the agent starts on its own, a saved conversation coming back, no
-//! compaction mark. A new agent is a new conversation: it starts again
-//! from nothing when one says who the client is (`initialize`).
+//! the agent starts on its own, a saved conversation coming back, where
+//! the conversation was compacted. A new agent is a new conversation: it
+//! starts again from nothing when one says who the client is (`initialize`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -117,6 +117,20 @@ pub enum Kind {
     Notice {
         tone: Tone,
         text: String,
+    },
+    /// Where the conversation was compacted (`/compact`, or on its own:
+    /// `auto`). Once over: when, how many tokens it summarized, and the
+    /// summary; while it runs, none of them.
+    Compaction {
+        auto: bool,
+        ended: Option<f64>,
+        tokens: u64,
+        summary: Option<String>,
+    },
+    /// The kernel came back with the conversation's variables, or could
+    /// not: a line of its own, which lands when it comes.
+    Kernel {
+        restored: bool,
     },
 }
 
@@ -261,6 +275,8 @@ pub struct Chat {
     streaming: Option<String>,
     /// The reasoning under way: its turn and its place there.
     thinking: Option<(usize, usize)>,
+    /// The compaction under way: its turn and its place there.
+    compacting: Option<(usize, usize)>,
 }
 
 impl Chat {
@@ -462,12 +478,8 @@ impl Chat {
             Some("_unharnessed/kernel/restored") => {
                 let restored = params.get("restored").and_then(Value::as_bool) == Some(true);
                 self.restored = restored;
-                let (tone, text) = if restored {
-                    (Tone::Info, "Python kernel restored")
-                } else {
-                    (Tone::Warning, "The Python kernel could not be restored")
-                };
-                self.line(self.dated(now), vec![(tone, text.to_string())]);
+                // It lands now, also in a conversation coming back.
+                self.lines(now, vec![Kind::Kernel { restored }]);
             }
             Some(providers::LOGIN_UPDATE) => self.providers.update(params),
             Some(_) => {}
@@ -651,18 +663,22 @@ impl Chat {
     /// A line of the conversation that is no turn of the agent's: what
     /// happened to its kernel, or to its process.
     fn line(&mut self, now: f64, notices: Vec<(Tone, String)>) {
+        let kinds = notices
+            .into_iter()
+            .map(|(tone, text)| Kind::Notice { tone, text });
+        self.lines(now, kinds.collect());
+    }
+
+    fn lines(&mut self, now: f64, kinds: Vec<Kind>) {
         self.turns.push(Turn {
             prompt: None,
             images: Vec::new(),
             rewind: None,
             wake: None,
             state: TurnState::Done,
-            items: notices
+            items: kinds
                 .into_iter()
-                .map(|(tone, text)| Item {
-                    at: now,
-                    kind: Kind::Notice { tone, text },
-                })
+                .map(|kind| Item { at: now, kind })
                 .collect(),
             at: now,
             began: now,
@@ -762,6 +778,9 @@ impl Chat {
         if self.thinking.is_some_and(|(kept, _)| kept >= turn) {
             self.thinking = None;
         }
+        if self.compacting.is_some_and(|(kept, _)| kept >= turn) {
+            self.compacting = None;
+        }
         self.streaming = None;
     }
 
@@ -810,6 +829,9 @@ impl Chat {
             return;
         }
         if let Some(usage) = meta.get("usage") {
+            if usage.get("compacting") == Some(&Value::Bool(true)) {
+                self.mark(now);
+            }
             self.usage = Some(Usage {
                 tokens: usage.get("tokens").and_then(Value::as_u64),
                 window: usage.get("window").and_then(Value::as_u64).unwrap_or(0),
@@ -1120,6 +1142,9 @@ impl Chat {
             };
             self.notice(now, turn, tone, clean(text));
         }
+        if let Some(compaction) = meta.get("compaction").filter(|value| !value.is_null()) {
+            self.compacted(now, turn, compaction);
+        }
         // Our prompt ends with its answer; a turn the agent started, here.
         if meta.get("phase").and_then(Value::as_str) == Some("responseBoundary")
             && Some(turn) != self.sent
@@ -1131,6 +1156,81 @@ impl Chat {
                 TurnState::Done
             };
             self.end(now, turn, state);
+        }
+    }
+
+    /// A compaction starts: it shows in the running turn, at its end.
+    fn mark(&mut self, now: f64) {
+        let Some(turn) = self.live.or(self.sent) else {
+            return;
+        };
+        if self.compacting.is_some() {
+            return;
+        }
+        let auto = !compacts(&self.turns[turn]);
+        let kind = Kind::Compaction {
+            auto,
+            ended: None,
+            tokens: 0,
+            summary: None,
+        };
+        self.push(now, turn, kind);
+        self.compacting = Some((turn, self.turns[turn].items.len() - 1));
+    }
+
+    /// A compaction ended: one that ran says how much it summarized, and
+    /// into what; one that did not (skipped, failed, stopped) leaves. One
+    /// of a conversation coming back comes over already.
+    fn compacted(&mut self, now: f64, turn: usize, compaction: &Value) {
+        let Some(tokens) = compaction.get("tokensBefore").and_then(Value::as_u64) else {
+            return self.unmark();
+        };
+        let summary = (compaction.get("summary").and_then(Value::as_str))
+            .map(clean)
+            .filter(|summary| !summary.trim().is_empty());
+        let marked = self.compacting.take().and_then(|(turn, at)| {
+            let item = self.turns.get_mut(turn)?.items.get_mut(at)?;
+            matches!(item.kind, Kind::Compaction { ended: None, .. }).then_some(item)
+        });
+        if let Some(item) = marked {
+            let auto = matches!(item.kind, Kind::Compaction { auto: true, .. });
+            item.kind = Kind::Compaction {
+                auto,
+                ended: Some(now),
+                tokens,
+                summary,
+            };
+        } else {
+            let kind = Kind::Compaction {
+                auto: !compacts(&self.turns[turn]),
+                ended: Some(now),
+                tokens,
+                summary,
+            };
+            self.push(now, turn, kind);
+        }
+    }
+
+    /// The compaction under way leaves: it did not run.
+    fn unmark(&mut self) {
+        let Some((turn, at)) = self.compacting.take() else {
+            return;
+        };
+        let Some(items) = self.turns.get_mut(turn).map(|turn| &mut turn.items) else {
+            return;
+        };
+        if matches!(
+            items.get(at).map(|item| &item.kind),
+            Some(Kind::Compaction { ended: None, .. })
+        ) {
+            items.remove(at);
+            // What came after it moved up a place.
+            if let Some((thinking, after)) = &mut self.thinking {
+                if *thinking == turn && *after > at {
+                    *after -= 1;
+                }
+            }
+            self.streaming = None;
         }
     }
 
@@ -1146,6 +1246,13 @@ impl Chat {
     fn end(&mut self, now: f64, turn: usize, state: TurnState) {
         if self.thinking.is_some_and(|(thinking, _)| thinking == turn) {
             self.settle(now);
+        }
+        // Its compaction never said how it ended.
+        if self
+            .compacting
+            .is_some_and(|(compacting, _)| compacting == turn)
+        {
+            self.unmark();
         }
         let Some(ending) = self.turns.get_mut(turn) else {
             return;
@@ -1179,6 +1286,13 @@ impl Chat {
     pub fn tick(&mut self, now: f64) {
         self.kernel.tick(now);
     }
+}
+
+/// The turn is `/compact`: a compaction in it is the user's, not one of its own.
+fn compacts(turn: &Turn) -> bool {
+    let text = turn.prompt.as_deref().unwrap_or_default().trim();
+    text.strip_prefix("/compact")
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
 }
 
 /// What a prompt's blocks say, as the user wrote it: its text, without

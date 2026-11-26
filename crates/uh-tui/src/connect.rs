@@ -95,6 +95,8 @@ pub enum Spot {
     /// by its id, and a port it listens on, which opens in the browser.
     Kill(String),
     Port(u64),
+    /// The kernel's panel: what closes it, and its rail, which opens it.
+    Panel,
     /// On the message box, while the conversation has a goal: what lets a
     /// goal that waits go on, and what ends it.
     Play,
@@ -106,6 +108,17 @@ pub enum Spot {
     Keep,
     /// Beside the wordmark: the settings.
     Settings,
+    /// On top of the message box, the messages that wait: their head,
+    /// which folds them or opens them; a message's row, which brings it
+    /// back to the box to be changed, as its pencil does; what sends it
+    /// into the running turn now; what takes it out of the line. Each by
+    /// its number. Once a stop paused them, what plays them again.
+    Queue,
+    Resume,
+    Waiting(u64),
+    Rush(u64),
+    Hold(u64),
+    Unqueue(u64),
     /// On the settings' screen: a tab; a row, to act on it; the switch at
     /// the end of a row that also opens; what removes a row. In an open
     /// form: where the keys go, by its place among the form's stops (a

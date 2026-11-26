@@ -24,10 +24,11 @@ use crate::draft::Draft;
 use crate::fold::{Fold, Folds};
 use crate::mention::{self, mentions};
 use crate::message::Message;
+use crate::motion::{FADE_IN, FOLD, LANDS};
 use crate::past::Past;
 use crate::slash::{self, Kind, Slash};
 use crate::theme::Depth;
-use crate::view::{self, Editing, Kept, Menu, Screen, Ui, MENU_ROWS};
+use crate::view::{self, Edited, Editing, Kept, Menu, Screen, Ui, MENU_ROWS};
 
 /// How many rows a notch of the wheel scrolls.
 const WHEEL: usize = 3;
@@ -154,6 +155,22 @@ pub struct Desk {
     /// What the last frame laid out, for the next.
     kept: Kept,
     depth: Depth,
+    /// The line opened in the view's last rows, while what it opens grows.
+    revealing: Option<Reveal>,
+}
+
+/// How few rows of the view under a line clicked open let it rise to show
+/// what it opens.
+const REVEAL: usize = 4;
+
+/// A line clicked open where what it opens would not show: its row in the
+/// conversation, the first row in view then, and how many rows the
+/// conversation had.
+#[derive(Clone, Copy)]
+struct Reveal {
+    line: usize,
+    first: usize,
+    length: usize,
 }
 
 impl Desk {
@@ -167,6 +184,7 @@ impl Desk {
             shown: None,
             kept: Kept::default(),
             depth: Depth::detect(),
+            revealing: None,
         }
     }
 
@@ -175,6 +193,7 @@ impl Desk {
     pub fn fresh(&mut self) {
         self.keep();
         self.kept = Kept::default();
+        self.revealing = None;
         let ui = &mut self.ui;
         ui.folds = Folds::default();
         ui.past = Past::default();
@@ -184,12 +203,13 @@ impl Desk {
         ui.panel_top = 0;
     }
 
-    /// The message of turn `turn`, `written`, comes back to the message
-    /// box to be changed: what was being written there is kept for after,
-    /// and the turn comes into view.
-    pub fn edit(&mut self, turn: usize, written: Message) {
+    /// A message, `written`, comes back to the message box to be changed:
+    /// one sent before, whose turn comes into view, or one that waits,
+    /// at which the line then waits. What was being written there is kept
+    /// for after.
+    pub fn edit(&mut self, of: Edited, written: Message) {
         let ui = &mut self.ui;
-        // From one earlier message to another, what is kept is still what was being written.
+        // From one message to another, what is kept is still what was being written.
         let saved = match ui.editing.take() {
             Some(editing) => editing.saved,
             None => Message {
@@ -197,10 +217,17 @@ impl Desk {
                 images: std::mem::take(&mut ui.images),
             },
         };
+        for waiting in &mut ui.waiting {
+            waiting.held = of == Edited::Waiting(waiting.id);
+        }
         ui.draft = Draft::holding(&written.text);
         ui.images = written.images;
-        ui.editing = Some(Editing { turn, saved });
+        ui.editing = Some(Editing { of, saved });
         ui.past.leave();
+        let Edited::Turn(turn) = of else {
+            self.suggest();
+            return;
+        };
         let row = (self.screen.turns.iter()).find(|(index, _)| *index == turn);
         if let Some((_, row)) = row {
             let first = self.screen.first;
@@ -211,12 +238,16 @@ impl Desk {
         self.suggest();
     }
 
-    /// The earlier message is left as it was: what was being written
-    /// before comes back to the message box. Answers the message that was
-    /// in the box, when one was being changed.
+    /// The message being changed is left as it was: what was being
+    /// written before comes back to the message box, the line no longer
+    /// waits at it. Answers the message that was in the box, when one was
+    /// being changed.
     pub fn keep(&mut self) -> Option<Message> {
         let ui = &mut self.ui;
         let editing = ui.editing.take()?;
+        for waiting in &mut ui.waiting {
+            waiting.held = false;
+        }
         let written = Message {
             text: ui.draft.take(),
             images: std::mem::replace(&mut ui.images, editing.saved.images),
@@ -237,6 +268,7 @@ impl Desk {
     /// The conversation's row `to` comes first in view, or that of the
     /// screen in its place.
     pub fn show(&mut self, to: usize) {
+        self.revealing = None;
         let to = to.min(self.screen.most);
         // Several moves may come before the next frame: each starts from the last.
         self.screen.first = to;
@@ -493,7 +525,12 @@ impl Desk {
                     return Some(Click::Stop);
                 }
                 if let Some(spot) = self.screen.spot_at(mouse.column, mouse.row) {
-                    return Some(Click::Spot(spot.clone()));
+                    match spot {
+                        Spot::Panel => self.toggle_panel(),
+                        Spot::Queue => self.ui.toggle_queue(),
+                        _ => return Some(Click::Spot(spot.clone())),
+                    }
+                    return None;
                 }
                 if let Some((row, cell)) = self.screen.field_at(mouse.column, mouse.row) {
                     self.ui.draft.point(row, cell, self.screen.draft);
@@ -505,11 +542,21 @@ impl Desk {
                     return Some(Click::Edit(turn));
                 }
                 // The line clicked stays where it is: what it folds over
-                // opens under it, and the conversation waits there.
+                // opens under it, and the conversation waits there. In the
+                // view's last rows, it rises to show what opens.
+                let first = self.screen.first;
                 if self.ui.top.is_none() {
-                    self.ui.top = Some(self.screen.first);
+                    self.ui.top = Some(first);
                 }
+                let opens = !self.ui.folds.open(fold);
                 self.ui.folds.toggle(fold, self.ui.wall);
+                let at = usize::from(mouse.row.saturating_sub(view::TOP));
+                let under = self.screen.rows.saturating_sub(at + 1);
+                self.revealing = (opens && under < REVEAL).then_some(Reveal {
+                    line: first + at,
+                    first,
+                    length: self.screen.length,
+                });
                 return Some(Click::Fold(fold));
             }
             MouseEventKind::ScrollUp => self.wheel(mouse.column, -WHEEL.cast_signed()),
@@ -533,10 +580,36 @@ impl Desk {
         }
     }
 
-    /// A fold the user set is on its way.
+    /// A line opened in the view's last rows, where what it opens would
+    /// not show: it rises as that grows, to the view's middle at the most.
+    fn reveal(&mut self) {
+        let Some(reveal) = self.revealing else {
+            return;
+        };
+        let grown = self.screen.length.saturating_sub(reveal.length);
+        let rise = (reveal.line - reveal.first).saturating_sub(self.screen.rows / 2);
+        self.ui.top = Some(reveal.first + grown.min(rise));
+        if !self.ui.folds.moving(self.ui.wall) {
+            self.revealing = None;
+        }
+    }
+
+    /// The kernel's panel opens, or closes to its rail.
+    pub fn toggle_panel(&mut self) {
+        self.ui.panel = !self.ui.panel;
+        self.ui.panel_at = self.ui.wall;
+        self.ui.panel_top = 0;
+    }
+
+    /// A fold the user set is on its way, or the panel, the messages that
+    /// wait, or the effort's track.
     #[must_use]
     pub fn moving(&self) -> bool {
-        self.ui.folds.moving(self.ui.wall)
+        let wall = self.ui.wall;
+        self.ui.folds.moving(wall)
+            || wall - self.ui.panel_at < FADE_IN
+            || wall - self.ui.queue.at < FOLD
+            || (self.ui.slid).is_some_and(|(at, _)| wall - at < LANDS)
     }
 
     /// The conversation at `now`, on the terminal.
@@ -566,6 +639,8 @@ impl Desk {
             // The panel's rows left, or closed: it shows no further than its last.
             let most = self.screen.panel.map_or(0, |(_, most)| most);
             self.ui.panel_top = self.ui.panel_top.min(most);
+            let top = self.ui.top;
+            self.reveal();
             // Back at the conversation's end once a fold has settled, it follows again.
             if !self.moving() && self.ui.top.is_some_and(|top| top >= self.screen.most) {
                 self.ui.top = None;
@@ -575,7 +650,7 @@ impl Desk {
             let over = (self.pointer)
                 .and_then(|(x, y)| self.screen.spot_at(x, y))
                 .cloned();
-            if hover == self.ui.hover && over == self.ui.over {
+            if hover == self.ui.hover && over == self.ui.over && self.ui.top == top {
                 break;
             }
             self.ui.hover = hover;

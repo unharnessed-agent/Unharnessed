@@ -14,10 +14,15 @@ replays a recorded conversation on the same screen.
   lists, quotes, code, tables with their columns aligned), each Python cell as one line
   (its mark, what it runs, the exception it raised), cells in a row folded
   into "Ran 3 Python cells", a done turn's work folded into
-  "Worked for 23s · 4 cells". The kernel's panel on the right, on screens
-  of 100 columns and more: the servers the agent left running, a row each
-  with its ports, its time and what stops it, and the variables of its
-  REPL, a row each with its name and its type.
+  "Worked for 23s · 4 cells", where the conversation was compacted a line
+  across it ("Compacted · 12k tokens summarized"), which opens on the
+  summary. The conversation runs the column's whole width. The kernel's
+  panel on the right, on screens of 100 columns and more: the servers the
+  agent left running, a row each with its ports, its time and what stops
+  it, and the variables of its REPL, a row each with its name and its
+  type. The `»` at its top right closes it to a rail at the screen's edge
+  (a dot on it while a server runs), and the conversation takes its room;
+  a click anywhere on the rail opens it again.
   Under the conversation, the message box: what it asks for under the
   caret, then the message as it is written, and its bar with the model,
   the reasoning effort as a track lit up to its level, how much of the
@@ -77,11 +82,19 @@ replays a recorded conversation on the same screen.
   attachments (`vscode/webview/attachments.ts`): in a live session a paste
   that is nothing but the paths of image files (what a terminal writes for
   files dropped on it: whole paths, `~/`, `file://`, a space quoted or
-  after a backslash) attaches them to the message instead of writing them,
-  and `Ctrl+V` attaches the image on the clipboard (asked of the system's
-  own tool, `osascript`, `wl-paste` or `xclip`: a terminal pastes text
-  only). An image is told by its first bytes (PNG, JPEG, GIF, WebP), not
-  by its name. The message box shows each by its name with the `×` that
+  after a backslash, the narrow space macOS puts before `PM` kept)
+  attaches them to the message instead of writing them; so do the paths
+  VS Code's terminal types, not pastes, for a dropped file (read as one
+  when they come at once), and a screenshot's thumbnail dropped while
+  macOS still holds it (read at once: it is gone moments later, and said
+  to be). `Ctrl+V` attaches the image on the clipboard (asked of the
+  system's own tool, `osascript`, `wl-paste` or `xclip`: a terminal pastes
+  text only), and so does `Cmd+V` when the terminal pastes nothing for it
+  (VS Code's) or reports the key; a file copied in Finder comes as the
+  file, by `Ctrl+V` or as the name VS Code pastes of it. An image is told
+  by its first bytes (PNG, JPEG, GIF, WebP), not by its name, and goes by
+  its file's name, or as `Image 1`, `Image 2` (the clipboard's). The
+  message box shows each by its name with the `×` that
   takes it off (Backspace on an empty message takes the last one off), and
   under them what was refused and why: a file that is no image, an
   eleventh image, one past what the agent takes while it expects large
@@ -140,7 +153,11 @@ replays a recorded conversation on the same screen.
   (the extension's `wave.ts`); the reasoning's words come in as bright as
   the answer's, then cool to their grey (from the page to grey alone, the
   front hardly shows in a terminal); the light crossing a live word, the light
-  running through a variable that changed, the folds. Every animation is a
+  running through a variable that changed, the folds; a line that lands
+  (the kernel restored, a compaction over, the effort's level chosen), its
+  letters coming in one after another in the accent, then turning to
+  their own ink; the compaction's rules growing out of it; the effort's
+  fill running to its level. Every animation is a
   function of the conversation and a clock: a frame at a given moment is
   always the same frame.
 - **The live session** (`live.rs`, `agent.rs`): it starts the agent
@@ -160,10 +177,10 @@ replays a recorded conversation on the same screen.
   agent (`session/cancel`) and brings the messages that waited back to the
   message box, the ones the turn had not taken first. `Ctrl+C` empties the message box, else stops the agent,
   else leaves; `Ctrl+D` on an empty box, `Ctrl+Q` and `/quit` leave;
-  `Ctrl+O` opens or closes the conversation's folds, `Ctrl+K` hides the
-  panel; `Ctrl+P` opens the models, `Ctrl+T` the reasoning effort,
+  `Ctrl+O` opens or closes the conversation's folds, `Ctrl+K` closes or
+  opens the panel; `Ctrl+P` opens the models, `Ctrl+T` the reasoning effort,
   `Ctrl+R` the saved conversations, `Ctrl+N` a new one, `Ctrl+S` the
-  settings; `Ctrl+V` attaches the clipboard's image. An open variable's value and an open server's last lines are
+  settings; `Ctrl+V` (or `Cmd+V`) attaches the clipboard's image. An open variable's value and an open server's last lines are
   asked of the kernel, again when they change. A message given at the
   launch is sent first, the launch's other messages after it. Leaving
   closes the agent's input: it saves its kernel and exits (the wait is
@@ -239,7 +256,8 @@ replays a recorded conversation on the same screen.
   in use with the check. What is typed searches them (name, id,
   provider), the arrows choose one, Enter or a click picks it. A click on
   the bar's effort, `Ctrl+T` or `/effort` opens the model's levels on a
-  track: `←` `→` set it a level over at once, a click on a level sets
+  track filled in the accent up to the one in use: `←` `→` set it a level
+  over at once, a click on a level sets
   that one; a model with one level has nothing to open. Esc, or a click
   beside it, closes a menu. The screen shows the choice at once, and what
   the agent answers then: the effort follows the model, and a change it
@@ -266,8 +284,11 @@ replays a recorded conversation on the same screen.
   `restored`, the answers to `session/new`, `session/load`,
   `session/prompt`, `_unharnessed/session/rewind`,
   `_unharnessed/kernel/tail`, `kill` and `preview`), a
-  part of what `vscode/src/chat.ts` handles. A conversation that comes back shows settled: nothing of it
-  moves in, and its turns carry no time (how long they took was not kept).
+  part of what `vscode/src/chat.ts` handles, its compactions with it (the
+  usage's `compacting`, then `_meta.unharnessed.compaction`: one that did
+  not run leaves). A conversation that comes back shows settled: nothing of it
+  moves in but the kernel's line, and its turns carry no time (how long
+  they took was not kept).
   A new agent is a new conversation (`initialize` starts it from nothing),
   so a recording of several replays to the last.
 - **Text** (`text.rs`, `markdown.rs`, `cell.rs`): one glyph per grapheme
@@ -286,7 +307,8 @@ replays a recorded conversation on the same screen.
   recording at the pace it happened. Letters go to the message box, so
   the replay's keys are chords: `Ctrl+P` pauses, `Shift+←` `Shift+→` seek,
   `Ctrl+R` restarts, `Ctrl+O` opens or closes the conversation's folds,
-  `Ctrl+K` hides the panel, `Ctrl+C`, `Ctrl+Q` or `Esc` leaves; `PgUp`
+  `Ctrl+K` closes or opens the panel (a click on it too), `Ctrl+C`,
+  `Ctrl+Q` or `Esc` leaves; `PgUp`
   `PgDn` and the wheel scroll (`↑` `↓` too, from the message's first and
   last rows; `Home` `End` while it is empty), a click opens or closes a
   fold (`--speed`,
@@ -312,7 +334,8 @@ form shows eight at a time. A restart stops the turn that runs, as leaving
 a conversation does. An image is never shrunk here: one past the agent's
 limit is refused while `images.autoResize` is on. Images show by their
 names, not as pictures, and a conversation that comes back has lost the
-names. A message that waits its turn cannot be changed, only brought back
+names. `Cmd+V` on an image alone does nothing in a terminal that sends
+nothing for it (Terminal.app): `Ctrl+V` does. A message that waits its turn cannot be changed, only brought back
 with the others by `Esc`. A goal's commands sent from the
 box's buttons come back as the user's messages with a saved conversation
 (the agent keeps them as prompts), and its time is counted from what the
@@ -332,7 +355,7 @@ in other conversations are
 not brought back. The `@` menu offers files, not folders (a folder typed
 whole is a mention all the same). A cell's kind (edit, write, read,
 search) and an edit's changed lines are not read from its code yet
-(`vscode/src/cell.ts`); the compaction mark is not drawn. A
+(`vscode/src/cell.ts`). A
 command the agent left running that listens on no port is not on the
 panel (as in the extension), so it cannot be stopped from it; the panel's
 rows are the mouse's only. One theme, the dark one. The mouse is the application's: the terminal's own selection
@@ -369,5 +392,6 @@ template and a skill of the test's own; the settings written, a server
 and a skill made, changed and removed, the Marketplace over the catalog
 the repository's tests read, groups of instructions, a restart; a message
 changed and the conversation gone back; images dropped, pasted from a
-clipboard the test stands in for, sent and refused). `ignore` lists the folder's files as
+clipboard the test stands in for, sent and refused; `Cmd+V`, a file copied
+in Finder, a path typed as VS Code does, a screenshot's thumbnail). `ignore` lists the folder's files as
 git sees them, `url` writes a mention's link.

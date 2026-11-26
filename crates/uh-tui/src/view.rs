@@ -33,7 +33,7 @@ use crate::markdown;
 use crate::mention::{mentions, name_of, Paths, Word};
 use crate::message::{Attached, Message};
 use crate::motion::{
-    breathe, lit, progress, shine, spinner, FADE_IN, FOLD, THOUGHT_COOL, WAVE_FADE,
+    breathe, landing, lit, progress, shine, spinner, FADE_IN, FOLD, THOUGHT_COOL, WAVE_FADE,
 };
 use crate::past::Past;
 use crate::pick::{self, Entry, Pick};
@@ -44,10 +44,17 @@ use crate::theme::{sunk, Rgb, ACCENT, BG, INK, MUTED, PYTHON_BLUE, RAISED, RAISE
 
 /// The page's margin, left and right.
 pub const MARGIN: u16 = 2;
-/// The widest the conversation's text runs.
-const TEXT_MAX: u16 = 96;
+/// The conversation's first row on the screen, under the wordmark's.
+pub const TOP: u16 = 2;
 /// The narrowest screen that shows the kernel's panel beside the conversation.
 const PANEL_FROM: u16 = 100;
+/// How wide the kernel's panel is once closed: a rail at the screen's
+/// edge, a click on which opens it again.
+const RAIL: u16 = 3;
+/// What closes the kernel's panel, at its top right; and what opens it
+/// again, on its rail.
+const CLOSE_PANEL: &str = "»";
+const OPEN_PANEL: &str = "«";
 /// The shortest screen whose message box has air in it and a row under it.
 const ROOMY_FROM: u16 = 20;
 /// What a line that folds starts with, in cells: its mark (two cells) and a
@@ -81,8 +88,18 @@ pub const MENU_ROWS: usize = 8;
 /// The widest the `@` menu runs, and the narrowest.
 const MENU_MAX: usize = 76;
 const MENU_MIN: usize = 34;
-/// How much of its ink a message that waits shows.
-const WAITS: f64 = 0.45;
+/// The most rows the messages that wait take on the message box, each a
+/// row; past them, how many more wait.
+const QUEUE_ROWS: usize = 6;
+/// What a message that waits does, at its row's end under the pointer,
+/// each a button: it goes now, comes back to the message box to be
+/// changed, leaves. A terminal draws a character no larger than its cell:
+/// these are the heaviest of their kind, in bold.
+const NOW: &str = "➤";
+const CHANGE: &str = "✎";
+const DROP: &str = "✖";
+/// What plays the messages that wait again, once a stop paused them.
+const RESUME: &str = "▶ Resume";
 
 /// The files offered for the `@` word being written in the message box.
 #[derive(Clone)]
@@ -95,20 +112,77 @@ pub struct Menu {
     pub top: usize,
 }
 
-/// An earlier message being changed in the message box.
+/// What the message box holds to be changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Edited {
+    /// The message turn `turn` starts with.
+    Turn(usize),
+    /// A message that waits, by its number.
+    Waiting(u64),
+}
+
+/// A message being changed in the message box: one sent before, or one
+/// that waits.
 #[derive(Clone)]
 pub struct Editing {
-    /// Its turn.
-    pub turn: usize,
+    pub of: Edited,
     /// What was in the message box before, which comes back after.
     pub saved: Message,
+}
+
+impl Editing {
+    /// The turn whose message it is, when it is one sent before.
+    #[must_use]
+    pub fn turn(&self) -> Option<usize> {
+        match self.of {
+            Edited::Turn(turn) => Some(turn),
+            Edited::Waiting(_) => None,
+        }
+    }
+}
+
+/// The messages that wait, on top of the message box.
+#[derive(Clone, Copy)]
+pub struct Queue {
+    /// How many were ever put in line: the last one's number.
+    pub given: u64,
+    /// Folded to their head; when they last opened or closed.
+    pub shut: bool,
+    pub at: f64,
+    /// A stop left them waiting: none goes by itself.
+    pub paused: bool,
+}
+
+impl Default for Queue {
+    fn default() -> Queue {
+        Queue {
+            given: 0,
+            shut: false,
+            at: f64::NEG_INFINITY,
+            paused: false,
+        }
+    }
+}
+
+/// A message written while the agent works: it waits its turn.
+#[derive(Clone, Debug)]
+pub struct Waiting {
+    /// Its number, which a click names it by.
+    pub id: u64,
+    pub message: Message,
+    /// When it joined the line, on the screen's clock.
+    pub at: f64,
+    /// Back in the message box to be changed: the line waits at it.
+    pub held: bool,
 }
 
 /// What the user set on the screen.
 #[derive(Clone)]
 pub struct Ui {
-    /// The messages written while the agent works: they wait their turn.
-    pub waiting: Vec<Message>,
+    /// The messages written while the agent works, in the order they go,
+    /// and how they show.
+    pub waiting: Vec<Waiting>,
+    pub queue: Queue,
     /// The messages for the running turn that have not gone into it yet;
     /// they go before the ones that wait.
     pub rushed: Vec<Message>,
@@ -140,9 +214,12 @@ pub struct Ui {
     pub folds: Folds,
     /// The message being written.
     pub draft: Draft,
-    /// The kernel's panel shows, when the screen is wide enough; its
-    /// first row in view, when it has more rows than the screen.
+    /// The kernel's panel is open (else a rail at the screen's edge
+    /// stands for it), when the screen is wide enough; when it last
+    /// opened or closed; its first row in view, when it has more rows
+    /// than the screen.
     pub panel: bool,
+    pub panel_at: f64,
     pub panel_top: usize,
     /// The conversation's first row in view; `None` follows its end.
     pub top: Option<usize>,
@@ -156,6 +233,9 @@ pub struct Ui {
     pub prefs: Option<Prefs>,
     /// The menu open over the message box: the models, or the reasoning effort.
     pub pick: Option<Pick>,
+    /// When the effort's track last moved, and the level it moved from
+    /// (`None`: it opened, and fills from nothing).
+    pub slid: Option<(f64, Option<usize>)>,
     /// The screen is a live session's: an `@` in the message box opens the
     /// folder's files, the session's options can be set (the bar's model
     /// and effort open their menus), and its conversation left for another
@@ -176,6 +256,7 @@ impl Default for Ui {
     fn default() -> Ui {
         Ui {
             waiting: Vec::new(),
+            queue: Queue::default(),
             rushed: Vec::new(),
             images: Vec::new(),
             said: None,
@@ -191,6 +272,7 @@ impl Default for Ui {
             folds: Folds::default(),
             draft: Draft::default(),
             panel: true,
+            panel_at: f64::NEG_INFINITY,
             panel_top: 0,
             top: None,
             hover: None,
@@ -198,12 +280,45 @@ impl Default for Ui {
             history: None,
             prefs: None,
             pick: None,
+            slid: None,
             live: false,
             over: None,
             note: String::new(),
             wall: 0.0,
             clock: 0,
         }
+    }
+}
+
+impl Ui {
+    /// `message` waits its turn, last in line.
+    pub fn wait(&mut self, message: Message) {
+        let waiting = self.waiting_of(message);
+        self.waiting.push(waiting);
+    }
+
+    /// `messages` wait, first in line, in their order.
+    pub fn wait_first(&mut self, messages: Vec<Message>) {
+        let first: Vec<Waiting> = (messages.into_iter())
+            .map(|message| self.waiting_of(message))
+            .collect();
+        self.waiting.splice(0..0, first);
+    }
+
+    fn waiting_of(&mut self, message: Message) -> Waiting {
+        self.queue.given += 1;
+        Waiting {
+            id: self.queue.given,
+            message,
+            at: self.wall,
+            held: false,
+        }
+    }
+
+    /// The messages that wait open on top of the message box, or fold to their head.
+    pub fn toggle_queue(&mut self) {
+        self.queue.shut = !self.queue.shut;
+        self.queue.at = self.wall;
     }
 }
 
@@ -226,9 +341,11 @@ pub struct Area {
 /// What was drawn, for what the user does next on it.
 #[derive(Default)]
 pub struct Screen {
-    /// How many rows the conversation can scroll, and its first row in view.
+    /// How many rows the conversation can scroll, its first row in view,
+    /// and how many rows it has.
     pub most: usize,
     pub first: usize,
+    pub length: usize,
     /// How wide the message box's text runs: Up and Down move the caret by its rows.
     pub draft: usize,
     hits: Vec<Hit>,
@@ -318,17 +435,17 @@ pub fn draw(canvas: &mut Canvas, chat: &Chat, ui: &Ui, now: f64, kept: &mut Kept
         return history::draw(canvas, chat, ui, history, now);
     }
     let mut spots = header(canvas, ui, true);
-    let panel = if ui.panel && w >= PANEL_FROM {
-        (w / 4).clamp(26, 32)
-    } else {
-        0
+    let panel = match (w >= PANEL_FROM, ui.panel) {
+        (false, _) => 0,
+        (true, true) => (w / 4).clamp(26, 32),
+        (true, false) => RAIL,
     };
     let column = if panel > 0 {
         w - panel - 1 - 2 - MARGIN
     } else {
         w - 2 * MARGIN
     };
-    let top = 2;
+    let top = TOP;
     let roomy = h >= ROOMY_FROM;
     // The message box grows with the message, to a part of the screen.
     let draft = usize::from(column.saturating_sub(4));
@@ -337,25 +454,20 @@ pub fn draw(canvas: &mut Canvas, chat: &Chat, ui: &Ui, now: f64, kept: &mut Kept
     for row in &mut laid.rows {
         marked(row, ui.draft.text(), ui.files.as_deref());
     }
-    // What stands over the message in its box, a row each: the goal, the
-    // message being changed, the images; and a row before the message
-    // where there is room.
-    let tops = [
-        chat.goal.is_some(),
-        ui.editing.is_some(),
-        !ui.images.is_empty(),
-        noted(chat, ui).is_some(),
-    ];
-    let goal_rows = match cells(tops.into_iter().filter(|top| *top).count()) {
-        0 => 0,
-        count => count + u16::from(roomy),
-    };
+    let goal_rows = tops(chat, ui, roomy);
     let box_rows = cells(laid.rows.len().max(1)) + if roomy { 4 } else { 3 } + goal_rows;
+    // On top of it all, the messages that wait: in what the screen has
+    // left once the conversation has a few rows.
+    let left = h.saturating_sub(box_rows + u16::from(roomy) + top + 5);
+    let most = usize::from(if roomy { left } else { left.min(1) }).min(QUEUE_ROWS + 5);
+    let tray = queue(chat, ui, draft, most, now);
+    let tray_rows = cells(tray.rows.len());
+    let box_rows = box_rows + tray_rows;
     let composer = h - box_rows - u16::from(roomy);
 
     // A row of the page stays between the conversation and the message box.
-    let area = (top, composer - 1 - top, column.min(TEXT_MAX));
-    let (most, first, mut hits, turns) = conversation(canvas, chat, ui, area, now, kept);
+    let area = (top, composer - 1 - top, column);
+    let (most, first, length, mut hits, turns) = conversation(canvas, chat, ui, area, now, kept);
     let rows = usize::from(area.1);
     // Over the conversation's last rows; a row of the page stays under it.
     let area = (MARGIN, top, composer - 1, column);
@@ -371,16 +483,18 @@ pub fn draw(canvas: &mut Canvas, chat: &Chat, ui: &Ui, now: f64, kept: &mut Kept
         spots.extend(picks);
     }
     let area = (MARGIN, composer, column, box_rows);
-    let (stop, links) = self::composer(canvas, chat, &laid, area, ui, (goal_rows, now));
+    let (stop, links) = self::composer(canvas, chat, &laid, area, ui, (&tray, goal_rows, now));
     spots.extend(links);
     let field = (!ui.draft.is_empty()).then(|| {
         let wide = column.saturating_sub(4);
-        let first = composer + 1 + goal_rows;
+        let first = composer + 1 + tray_rows + goal_rows;
         (MARGIN + 2, first, wide, cells(laid.rows.len()))
     });
     let mut scrolls = None;
-    if panel > 0 {
-        let area = (w - panel - 1, top, panel, composer + box_rows - top);
+    let area = (w - panel - 1, top, panel, composer + box_rows - top);
+    if panel == RAIL {
+        spots.extend(rail(canvas, &chat.kernel, ui, area, now));
+    } else if panel > 0 {
         let (rows, marks, most) = self::panel(canvas, &chat.kernel, ui, area, now);
         hits.extend(rows);
         spots.extend(marks);
@@ -389,6 +503,7 @@ pub fn draw(canvas: &mut Canvas, chat: &Chat, ui: &Ui, now: f64, kept: &mut Kept
     Screen {
         most,
         first,
+        length,
         draft,
         hits,
         stop,
@@ -397,6 +512,23 @@ pub fn draw(canvas: &mut Canvas, chat: &Chat, ui: &Ui, now: f64, kept: &mut Kept
         panel: scrolls,
         rows,
         turns,
+    }
+}
+
+/// What stands over the message in its box, a row each: the goal, the
+/// message being changed, the images, what is said of them; and a row
+/// before the message where there is room (`roomy`). Answers how many
+/// rows they take.
+fn tops(chat: &Chat, ui: &Ui, roomy: bool) -> u16 {
+    let tops = [
+        chat.goal.is_some(),
+        ui.editing.is_some(),
+        !ui.images.is_empty(),
+        noted(chat, ui).is_some(),
+    ];
+    match cells(tops.into_iter().filter(|top| *top).count()) {
+        0 => 0,
+        count => count + u16::from(roomy),
     }
 }
 
@@ -425,8 +557,8 @@ fn noted(chat: &Chat, ui: &Ui) -> Option<(String, bool)> {
 
 /// The conversation in the rows `area` gives (its first row, how many
 /// rows, how wide its text runs), from where the user scrolled it to, or
-/// its end. Answers how many rows it can scroll, its first row in view, and
-/// the lines a click folds.
+/// its end. Answers how many rows it can scroll, its first row in view, how
+/// many rows it has, the lines a click folds, and each turn's first row.
 fn conversation(
     canvas: &mut Canvas,
     chat: &Chat,
@@ -434,7 +566,7 @@ fn conversation(
     area: (u16, u16, u16),
     now: f64,
     kept: &mut Kept,
-) -> (usize, usize, Vec<Hit>, Vec<(usize, usize)>) {
+) -> (usize, usize, usize, Vec<Hit>, Vec<(usize, usize)>) {
     let (top, rows, text) = area;
     let rows = usize::from(rows);
     let parts = transcript(chat, ui, usize::from(text), now, kept);
@@ -483,7 +615,7 @@ fn conversation(
             }
         }
     }
-    (most, first, hits, turns)
+    (most, first, length, hits, turns)
 }
 
 /// `glyphs`, drawn from `text`, with each mention of a file or a folder
@@ -610,18 +742,19 @@ fn header(canvas: &mut Canvas, ui: &Ui, links: bool) -> Vec<Area> {
     areas
 }
 
-/// The message box, a surface `rows` high: the conversation's goal on top,
-/// while it has one; the message being written (what the box asks for,
-/// while there is none) with its caret; and under it the box's bar.
-/// Answers where the mark that stops the agent is, while it works (or
-/// makes its goal wait), and where a click lands on what the box leads to.
+/// The message box, a surface `rows` high: the messages that wait on top,
+/// while some do; the conversation's goal, while it has one; the message
+/// being written (what the box asks for, while there is none) with its
+/// caret; and under it the box's bar. Answers where the mark that stops
+/// the agent is, while it works (or makes its goal wait), and where a
+/// click lands on what the box leads to.
 fn composer(
     canvas: &mut Canvas,
     chat: &Chat,
     laid: &Laid,
     area: (u16, u16, u16, u16),
     ui: &Ui,
-    (goal_rows, now): (u16, f64),
+    (tray, goal_rows, now): (&Tray, u16, f64),
 ) -> (Option<(u16, u16)>, Vec<Area>) {
     let (x, y, w, rows) = area;
     let wide = usize::from(w);
@@ -630,10 +763,20 @@ fn composer(
     }
     let room = wide.saturating_sub(4);
     let mut spots = Vec::new();
+    for (at, (row, alpha)) in tray.rows.iter().enumerate() {
+        canvas.put(x + 2, y + 1 + cells(at), x + w, row, *alpha);
+    }
+    spots.extend((tray.spots.iter()).map(|(row, from, to, spot)| Area {
+        y: y + 1 + cells(*row),
+        from: x + 2 + cells(*from),
+        to: x + 2 + cells(*to),
+        spot: spot.clone(),
+    }));
+    let tray_rows = cells(tray.rows.len());
     // What stands over the message, a row each; the message starts
     // `goal_rows` under where it would.
-    let mut top = y + 1;
-    let (y, rows) = (y + goal_rows, rows - goal_rows);
+    let mut top = y + 1 + tray_rows;
+    let (y, rows) = (y + tray_rows + goal_rows, rows - tray_rows - goal_rows);
     if let Some(goal) = chat.goal.as_ref().filter(|_| goal_rows > 0) {
         let (row, end) = goal_row(goal, room, ui, now);
         let shown = progress(now, goal.shown, FADE_IN) as f32;
@@ -750,13 +893,18 @@ fn goal_row(goal: &Goal, room: usize, ui: &Ui, now: f64) -> (Vec<Glyph>, usize) 
 }
 
 /// What says, on top of the message box, that the message in it takes
-/// the place of an earlier one; at the row's end, what leaves that one as
-/// it was. Answers the row, and the cell of what leaves it.
+/// the place of an earlier one, or of one that waits; at the row's end,
+/// what leaves that one as it was. Answers the row, and the cell of what
+/// leaves it.
 fn editing_row(room: usize, ui: &Ui) -> (Vec<Glyph>, usize) {
+    let what = match ui.editing.as_ref().map(|editing| editing.of) {
+        Some(Edited::Waiting(_)) => "Editing a waiting message",
+        _ => "Editing an earlier message",
+    };
     let left = joined([
         glyphs(EDIT, Ink::accent(), 0),
         glyphs(" ", Ink::faint(), 0),
-        glyphs("Editing an earlier message", Ink::text().bold(), 0),
+        glyphs(what, Ink::text().bold(), 0),
     ]);
     let over = ui.over == Some(Spot::Keep);
     let end = glyphs(END, if over { Ink::text() } else { Ink::faint() }, 0);
@@ -769,12 +917,253 @@ fn editing_row(room: usize, ui: &Ui) -> (Vec<Glyph>, usize) {
     )
 }
 
-/// An image a message carries, as a word: its mark and its name.
-fn image(image: &Attached, ink: Ink) -> Vec<Glyph> {
+/// The messages that wait, as they stand on top of the message box: its
+/// rows, each with how far in it is (an empty one is a row of the box's
+/// surface), and where a click lands on them: a row, its first cell, the
+/// cell past its last.
+#[derive(Default)]
+struct Tray {
+    rows: Vec<(Vec<Glyph>, f32)>,
+    spots: Vec<(usize, usize, usize, Spot)>,
+}
+
+/// How many cells the end of a row that waits takes: what it does under
+/// the pointer (three buttons of three cells), or what is happening to it.
+const QUEUE_END: usize = 9;
+
+/// The messages that wait for the agent (`Composer.tsx`'s queue), `room`
+/// cells wide and in `most` rows at the most: a head that says how many,
+/// a click on which folds them to it or opens them again; then a row
+/// each, in the order they go. First the ones sent into the running turn
+/// that it has not taken yet, a cyan dot breathing beside each; then the
+/// ones that wait for its end, numbered, the one back in the message box
+/// marked so. Under the pointer a row shows at its end what it does: go
+/// now, come back to the message box to be changed, leave. A rule under
+/// them, then the message box. Folded, the head says what goes next.
+/// Paused by a stop, the head says so, and plays them again.
+fn queue(chat: &Chat, ui: &Ui, room: usize, most: usize, now: f64) -> Tray {
+    let going: Vec<&Message> = chat.steering().chain(ui.rushed.iter()).collect();
+    let count = going.len() + ui.waiting.len();
+    let mut tray = Tray::default();
+    if count == 0 || most == 0 {
+        return tray;
+    }
+    // A row each, as many as fit with the head, the rule and the rows of the box between them.
+    let fits = most.saturating_sub(5);
+    let open = match (fits, ui.queue.shut) {
+        (0, _) => 0.0,
+        (_, true) => 1.0 - progress(now, ui.queue.at, FOLD),
+        (_, false) => progress(now, ui.queue.at, FOLD),
+    };
+    let next = (going.first().copied()).or_else(|| ui.waiting.first().map(|w| &w.message));
+    let (head, spots) = queue_head(ui, count, next, room, open);
+    tray.spots.extend(
+        spots
+            .into_iter()
+            .map(|(from, to, spot)| (0, from, to, spot)),
+    );
+    tray.rows.push((head, 1.0));
+    if most == 1 {
+        return tray;
+    }
+    let blank = || (Vec::new(), 1.0);
+    let mut rows: Vec<(Vec<Glyph>, f32)> = Vec::new();
+    let mut spots = Vec::new();
+    for message in &going {
+        let dot = glyphs("●", Ink::accent().alpha(0.55 + 0.45 * breathe(now)), 0);
+        let tag = glyphs("Sending", Ink::faint(), 0);
+        rows.push((queued(dot, message, tag, false, room), 1.0));
+    }
+    for (number, waiting) in (1..).zip(&ui.waiting) {
+        let (row, its) = waiting_row(waiting, number, ui, room);
+        let at = rows.len();
+        spots.extend(its.into_iter().map(|(from, to, spot)| (at, from, to, spot)));
+        rows.push((row, progress(now, waiting.at, FADE_IN) as f32));
+    }
+    let fits = fits.max(1);
+    if rows.len() > fits {
+        let more = rows.len() - (fits - 1);
+        rows.truncate(fits - 1);
+        spots.retain(|(at, ..)| *at < fits - 1);
+        let more = glyphs(&format!("    +{more} more"), Ink::faint(), 0);
+        rows.push((more, 1.0));
+    }
+    // Open: the head, a row of the box, the rows, a row, the rule, a row.
+    let rule = glyphs(&"─".repeat(room), Ink::of(INK, 0.1), 0);
+    let mut shown = vec![blank()];
+    shown.extend(rows);
+    shown.extend([blank(), (rule, 1.0), blank()]);
+    // Opening, its rows come in from the head down; folding, they leave from the bottom up.
+    let keep = ((shown.len() - 1) as f64 * open).round() as usize;
+    shown.truncate(keep);
+    shown.push(blank());
+    tray.rows.extend(shown);
+    let reached = tray.rows.len();
+    tray.spots.extend(
+        (spots.into_iter())
+            .map(|(at, start, end, spot)| (2 + at, start, end, spot))
+            .filter(|(at, ..)| *at < reached),
+    );
+    tray
+}
+
+/// The head of the messages that wait, `room` cells wide: whether they
+/// wait or are paused, and how many; folded (`open` under 1), what goes
+/// next beside it; paused, what plays them again at its end. Answers the
+/// row, and where a click lands on it.
+fn queue_head(
+    ui: &Ui,
+    count: usize,
+    next: Option<&Message>,
+    room: usize,
+    open: f64,
+) -> (Vec<Glyph>, Vec<(usize, usize, Spot)>) {
+    let lit = ui.over == Some(Spot::Queue);
+    let mut head = joined([
+        glyphs(
+            if ui.queue.paused { "Paused" } else { "Waiting" },
+            if lit { Ink::text() } else { Ink::muted() },
+            0,
+        ),
+        glyphs("  ", Ink::faint(), 0),
+        glyphs(&format!(" {count} "), Ink::text().on(INK, 0.1), 0),
+    ]);
+    let resume = if ui.queue.paused {
+        let ink = if ui.over == Some(Spot::Resume) {
+            Ink::accent().on(ACCENT, 0.16)
+        } else {
+            Ink::accent()
+        };
+        glyphs(&format!(" {RESUME} "), ink, 0)
+    } else {
+        Vec::new()
+    };
+    let end = room.saturating_sub(width(&resume));
+    if let Some(next) = next.filter(|_| open < 1.0) {
+        let mut said = glyphs("   ", Ink::faint(), 0);
+        said.extend(glyphs(&gist(next), Ink::faint(), 0));
+        let said = fit(said, end.saturating_sub(width(&head) + 2));
+        let fade = 1.0 - open as f32;
+        head.extend(said.into_iter().map(|mut glyph| {
+            glyph.ink.alpha *= fade;
+            glyph
+        }));
+    }
+    let mut spots = Vec::new();
+    if !resume.is_empty() {
+        let gap = end.saturating_sub(width(&head));
+        head.extend(glyphs(&" ".repeat(gap), Ink::faint(), 0));
+        head.extend(resume);
+        spots.push((end, room, Spot::Resume));
+    }
+    spots.push((0, end, Spot::Queue));
+    (head, spots)
+}
+
+/// The row of the message that waits `number`th in line, `room` cells
+/// wide. Under the pointer it shows at its end what it does, each a
+/// button, the one under the pointer lit; a click lands on them all the
+/// same. Being changed, it says so. Answers the row, and where a click
+/// lands on it.
+fn waiting_row(
+    waiting: &Waiting,
+    number: usize,
+    ui: &Ui,
+    room: usize,
+) -> (Vec<Glyph>, Vec<(usize, usize, Spot)>) {
+    let id = waiting.id;
+    if waiting.held {
+        let tag = glyphs("Editing", Ink::faint(), 0);
+        let mark = glyphs(EDIT, Ink::accent(), 0);
+        return (queued(mark, &waiting.message, tag, false, room), Vec::new());
+    }
+    let over = |spot: &Spot| ui.over.as_ref() == Some(spot);
+    let (rush, hold, drop) = (Spot::Rush(id), Spot::Hold(id), Spot::Unqueue(id));
+    let lit = [&rush, &hold, &drop, &Spot::Waiting(id)]
+        .into_iter()
+        .any(&over);
+    let button = |mark: &str, spot: &Spot, hot: Ink| {
+        let ink = if over(spot) {
+            hot.on(INK, 0.1)
+        } else {
+            Ink::muted()
+        };
+        glyphs(&format!(" {mark} "), ink.bold(), 0)
+    };
+    let acts = if lit {
+        joined([
+            button(NOW, &rush, Ink::accent()),
+            button(CHANGE, &hold, Ink::text()),
+            button(DROP, &drop, Ink::text()),
+        ])
+    } else {
+        Vec::new()
+    };
+    let end = room.saturating_sub(QUEUE_END);
+    let spots = vec![
+        (end, end + 3, rush),
+        (end + 3, end + 6, hold),
+        (end + 6, room, drop),
+        (0, end, Spot::Waiting(id)),
+    ];
+    let mark = glyphs(&number.to_string(), Ink::faint(), 0);
+    (queued(mark, &waiting.message, acts, lit, room), spots)
+}
+
+/// What a message that waits says on its row: its words on one line, or
+/// how many images it carries when it is nothing but them.
+fn gist(message: &Message) -> String {
+    let words = message
+        .text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    match message.images.len() {
+        _ if !words.is_empty() => words,
+        1 => "1 image".to_string(),
+        count => format!("{count} images"),
+    }
+}
+
+/// A row of a message that waits, `room` cells wide: its mark in two
+/// cells, its gist (`lit`, under the pointer), its images when it has
+/// words too, and `end` at the row's end.
+fn queued(
+    mark: Vec<Glyph>,
+    message: &Message,
+    end: Vec<Glyph>,
+    lit: bool,
+    room: usize,
+) -> Vec<Glyph> {
+    let pad = 2usize.saturating_sub(width(&mark));
+    let mut row = joined([glyphs(&" ".repeat(pad), Ink::faint(), 0), mark]);
+    row.extend(glyphs("  ", Ink::faint(), 0));
+    let images = match message.images.len() {
+        0 => Vec::new(),
+        _ if message.text.trim().is_empty() => Vec::new(),
+        1 => glyphs(&format!("  {IMAGE}"), Ink::of(ACCENT, 0.6), 0),
+        count => joined([
+            glyphs(&format!("  {IMAGE}"), Ink::of(ACCENT, 0.6), 0),
+            glyphs(&format!(" {count}"), Ink::faint(), 0),
+        ]),
+    };
+    let ink = if lit { Ink::text() } else { Ink::muted() };
+    let says = room.saturating_sub(width(&row) + width(&images) + QUEUE_END + 2);
+    row.extend(fit(glyphs(&gist(message), ink, 0), says));
+    row.extend(images);
+    let gap = room.saturating_sub(width(&row) + width(&end));
+    row.extend(glyphs(&" ".repeat(gap), Ink::faint(), 0));
+    row.extend(end);
+    fit(row, room)
+}
+
+/// An image a message carries, as a word: its mark and its name, cut to
+/// `most` cells.
+fn image(image: &Attached, ink: Ink, most: usize) -> Vec<Glyph> {
     joined([
         glyphs(IMAGE, Ink::of(ACCENT, ink.alpha.min(0.8)), 0),
         glyphs(" ", ink, 0),
-        glyphs(&image.name, ink, 0),
+        fit(glyphs(&image.name, ink, 0), most),
     ])
 }
 
@@ -786,7 +1175,8 @@ fn images_row(room: usize, ui: &Ui) -> (Vec<Glyph>, Vec<(usize, usize, Spot)>) {
     for (at, attached) in ui.images.iter().enumerate() {
         let spot = Spot::Detach(at);
         let over = ui.over.as_ref() == Some(&spot);
-        let mut chip = image(attached, Ink::of(INK, 0.82));
+        // A name too long for the row is cut, its cross kept.
+        let mut chip = image(attached, Ink::of(INK, 0.82), room.saturating_sub(4));
         chip.extend(glyphs(" ", Ink::faint(), 0));
         chip.extend(glyphs(
             END,
@@ -1150,7 +1540,7 @@ fn still(turn: &Turn, index: usize, ui: &Ui, now: f64) -> bool {
         && ui.hover.and_then(Fold::turn) != Some(index)
 }
 
-/// A stretch of the conversation's rows: a turn, or a message that waits.
+/// A stretch of the conversation's rows: a turn.
 struct Part {
     /// Its first row in the conversation, and how many it takes.
     from: usize,
@@ -1166,13 +1556,14 @@ struct Part {
 const BETWEEN: usize = 2;
 
 /// The conversation, `width` cells wide: its turns one under the other, two
-/// rows of the page between them, then the messages that wait.
+/// rows of the page between them. The messages that wait are on the
+/// message box ([`queue`]).
 fn transcript(chat: &Chat, ui: &Ui, width: usize, now: f64, kept: &mut Kept) -> Vec<Part> {
     kept.turns.retain(|index, _| *index < chat.turns.len());
     let drawn = (
         ui.listed,
         ui.editable,
-        ui.editing.as_ref().map(|editing| editing.turn),
+        ui.editing.as_ref().and_then(Editing::turn),
     );
     if kept.with != drawn {
         kept.turns.clear();
@@ -1212,20 +1603,6 @@ fn transcript(chat: &Chat, ui: &Ui, width: usize, now: f64, kept: &mut Kept) -> 
             }
         };
         place(rows, Some(index), None);
-    }
-    // What waits: the messages on their way into the running turn, which
-    // breathe, then the ones held back until the agent is done.
-    let files = ui.files.as_deref();
-    let going = WAITS + 0.35 * f64::from(breathe(now));
-    let rushed = chat.steering().chain(ui.rushed.iter());
-    let waiting = ui.waiting.iter().map(|message| (message, WAITS));
-    for (message, alpha) in rushed.map(|message| (message, going)).chain(waiting) {
-        let card = Card {
-            alpha,
-            ..Card::default()
-        };
-        let lines = bubble(&message.text, &message.images, width, files, card);
-        place(lines.len(), None, Some(lines));
     }
     parts
 }
@@ -1270,7 +1647,7 @@ fn answer_at(turn: &Turn) -> Option<usize> {
 /// to before it; or what woke the agent.
 fn opening(turn: &Turn, index: usize, ui: &Ui, width: usize, now: f64) -> Vec<Line> {
     if let Some(prompt) = &turn.prompt {
-        let editing = ui.editing.as_ref().map(|editing| editing.turn);
+        let editing = ui.editing.as_ref().and_then(Editing::turn);
         let fold = Fold::Prompt(index);
         let opens = ui.editable && turn.rewind.is_some() && editing != Some(index);
         let card = Card {
@@ -1295,7 +1672,7 @@ fn opening(turn: &Turn, index: usize, ui: &Ui, width: usize, now: f64) -> Vec<Li
 fn turn_lines(turn: &Turn, index: usize, ui: &Ui, width: usize, now: f64) -> Vec<Line> {
     let mut out = Vec::new();
     // Where the conversation stops being what sending the changed message keeps.
-    let editing = ui.editing.as_ref().map(|editing| editing.turn);
+    let editing = ui.editing.as_ref().and_then(Editing::turn);
     out.extend(opening(turn, index, ui, width, now));
     let kept = if turn.prompt.is_some() {
         out.len()
@@ -1399,7 +1776,7 @@ fn turn_lines(turn: &Turn, index: usize, ui: &Ui, width: usize, now: f64) -> Vec
 fn busy(turn: &Turn, now: f64) -> bool {
     match turn.items.last().map(|item| &item.kind) {
         Some(Kind::Text(stream)) => stream.wave.last().is_some_and(|last| now - last < QUIET),
-        Some(Kind::Thought { ended, .. }) => ended.is_none(),
+        Some(Kind::Thought { ended, .. } | Kind::Compaction { ended, .. }) => ended.is_none(),
         Some(Kind::Tool { status, .. }) => *status == ToolStatus::Running,
         _ => false,
     }
@@ -1436,7 +1813,7 @@ fn bubble(
             if !names.is_empty() {
                 names.extend(glyphs("   ", Ink::faint(), 0));
             }
-            names.extend(image(attached, Ink::muted()));
+            names.extend(image(attached, Ink::muted(), inner.saturating_sub(2)));
         }
         rows.extend(wrap(names, inner));
     }
@@ -1472,17 +1849,6 @@ struct Card {
     fold: Option<Fold>,
     lit: bool,
     changed: bool,
-}
-
-impl Default for Card {
-    fn default() -> Card {
-        Card {
-            alpha: 1.0,
-            fold: None,
-            lit: false,
-            changed: false,
-        }
-    }
 }
 
 fn item_lines(turn: &Turn, index: usize, at: usize, ui: &Ui, width: usize, now: f64) -> Vec<Line> {
@@ -1533,6 +1899,113 @@ fn item_lines(turn: &Turn, index: usize, at: usize, ui: &Ui, width: usize, now: 
                 .map(|row| Line::of(row).faded(progress(now, item.at, FADE_IN)))
                 .collect()
         }
+        Kind::Compaction { .. } => compaction(item, Fold::Item(index, at), ui, width, now),
+        Kind::Kernel { restored: true } => {
+            // It streams in blue, as the answer streams in, then settles in the ink.
+            let mut words = glyphs("Python kernel restored", Ink::text(), 0);
+            landed(&mut words, now - item.at);
+            wrap(words, width).into_iter().map(Line::of).collect()
+        }
+        Kind::Kernel { restored: false } => {
+            let words = glyphs("The Python kernel could not be restored", Ink::text(), 0);
+            wrap(words, width)
+                .into_iter()
+                .map(|row| Line::of(row).faded(progress(now, item.at, FADE_IN)))
+                .collect()
+        }
+    }
+}
+
+/// How long a compaction's rules take to grow out of it.
+const SEAMS: f64 = 0.7;
+
+/// Where the conversation was compacted (the extension's mark), across
+/// the conversation. While it runs, its words shine beside the spinner;
+/// once over, "Compacted" and how many tokens it summarized, between two
+/// rules. Landing, its letters come in blue and settle, the rules grow out
+/// of it. A click opens the summary under it, on a surface of its own.
+fn compaction(item: &Item, fold: Fold, ui: &Ui, width: usize, now: f64) -> Vec<Line> {
+    let Kind::Compaction {
+        auto,
+        ended,
+        tokens,
+        summary,
+    } = &item.kind
+    else {
+        return Vec::new();
+    };
+    let centred = |words: Vec<Glyph>, rule: f64| {
+        let words = fit(words, width);
+        let room = width.saturating_sub(self::width(&words) + 4);
+        let (left, right) = (room / 2, room - room / 2);
+        // Each rule grows from the words out.
+        let grown = |cells: usize| (cells as f64 * rule).round() as usize;
+        let seam = |cells: usize| glyphs(&"─".repeat(grown(cells)), Ink::of(INK, 0.1), 0);
+        let space = |cells: usize| glyphs(&" ".repeat(cells), Ink::faint(), 0);
+        joined([
+            space(left - grown(left)),
+            seam(left),
+            space(2),
+            words,
+            space(2),
+            seam(right),
+        ])
+    };
+    let Some(ended) = ended else {
+        let words = joined([spinning(now), glyphs(" ", Ink::faint(), 0)]);
+        let words = joined([words, shining("Compacting the conversation", now)]);
+        let line = Line::of(centred(words, 0.0)).faded(progress(now, item.at, FADE_IN));
+        return vec![line];
+    };
+    let label = if *auto {
+        "Compacted automatically"
+    } else {
+        "Compacted"
+    };
+    let mut words = glyphs(label, Ink::text(), 0);
+    words.extend(glyphs(
+        &format!(" · {} tokens summarized", short(*tokens)),
+        Ink::faint(),
+        0,
+    ));
+    landed(&mut words, now - ended);
+    let opens = summary.is_some();
+    let words = lifted(words, opens && ui.hover == Some(fold));
+    let line = Line::of(centred(words, progress(now, *ended, SEAMS)));
+    let Some(summary) = summary else {
+        return vec![line];
+    };
+    let mut out = vec![line.heads(fold)];
+    let open = ui.folds.amount(fold, ui.wall, 0.0);
+    if open > 0.0 {
+        // A row of the page, then the summary on its surface, set in by two cells.
+        let face = RAISED;
+        let pad = Line::surface(face, 0, width);
+        let mut under = vec![Line::blank(), pad.clone()];
+        let rows = markdown::render(summary, width.saturating_sub(4), Ink::muted());
+        under.extend(rows.into_iter().map(|row| {
+            let row = row.shifted(2);
+            if row.fill.is_some() {
+                row
+            } else {
+                row.on(face, 0, width)
+            }
+        }));
+        under.push(pad);
+        out.extend(folded(under, open));
+    }
+    out
+}
+
+/// `glyphs` landing, `since` seconds after they started to: each comes in
+/// blue, a little after the one before it, then turns to its own colour.
+pub fn landed(glyphs: &mut [Glyph], since: f64) {
+    let of = glyphs.len();
+    for (at, glyph) in glyphs.iter_mut().enumerate() {
+        let (inn, blue) = landing(since, at, of);
+        let own = glyph.ink;
+        glyph.ink.rgb = own.rgb.mix(ACCENT, blue);
+        glyph.ink.alpha = (own.alpha + (1.0 - own.alpha) * blue) * inn;
     }
 }
 
@@ -1939,13 +2412,23 @@ fn panel(
     let under = lines.len().saturating_sub(top + rows);
     let more = (under > 0).then(|| Line::of(glyphs(&format!("… {under} more"), Ink::faint(), 0)));
     let surface = Line::surface(RAISED, 0, usize::from(w));
-    // What the kernel first has to show comes in over the empty panel's words.
+    // What the kernel first has to show comes in over the empty panel's
+    // words; all of it comes in as the panel opens.
     let shown = kernel
         .opened
-        .map_or(1.0, |opened| progress(now, opened, FADE_IN));
+        .map_or(1.0, |opened| progress(now, opened, FADE_IN))
+        * progress(ui.wall, ui.panel_at, FADE_IN);
     for row in 0..h {
         canvas.line(x, y + row, w, &surface);
     }
+    // What closes it, in its top right corner: where the rail's mark is.
+    let close = Spot::Panel;
+    let ink = if ui.over.as_ref() == Some(&close) {
+        Ink::text()
+    } else {
+        Ink::faint()
+    };
+    canvas.put(x + w - 2, y, x + w, &glyphs(CLOSE_PANEL, ink, 0), 1.0);
     if let Some(more) = more {
         canvas.line(x + 2, y + 1 + cells(rows), w - 4, &more.faded(shown));
     }
@@ -1962,7 +2445,7 @@ fn panel(
         }
         canvas.line(x + 2, y, w - 4, &line.faded(shown));
     }
-    let spots = (marks.into_iter())
+    let mut spots: Vec<Area> = (marks.into_iter())
         .filter(|mark| (top..top + rows).contains(&mark.row))
         .map(|mark| Area {
             y: y + 1 + cells(mark.row - top),
@@ -1971,7 +2454,47 @@ fn panel(
             spot: mark.spot,
         })
         .collect();
+    spots.push(Area {
+        y,
+        from: x + w - 3,
+        to: x + w,
+        spot: close,
+    });
     (hits, spots, most)
+}
+
+/// The kernel's panel, closed: a rail at the screen's edge, with on top
+/// what opens it again, and under it a dot while a command the agent left
+/// runs. A click anywhere on it opens the panel.
+fn rail(
+    canvas: &mut Canvas,
+    kernel: &Kernel,
+    ui: &Ui,
+    area: (u16, u16, u16, u16),
+    now: f64,
+) -> Vec<Area> {
+    let (x, y, w, h) = area;
+    let over = ui.over == Some(Spot::Panel);
+    let surface = Line::surface(if over { RAISED_2 } else { RAISED }, 0, usize::from(w));
+    for row in 0..h {
+        canvas.line(x, y + row, w, &surface);
+    }
+    let shown = progress(ui.wall, ui.panel_at, FADE_IN) as f32;
+    let ink = if over { Ink::text() } else { Ink::muted() };
+    canvas.put(x + 1, y, x + w, &glyphs(OPEN_PANEL, ink, 0), shown);
+    let running = (kernel.commands.iter()).any(|command| command.phase == Phase::Running);
+    if running && h > 3 {
+        let dot = glyphs("●", Ink::accent().alpha(0.4 + 0.6 * breathe(now)), 0);
+        canvas.put(x + 1, y + 2, x + w, &dot, shown);
+    }
+    (0..h)
+        .map(|row| Area {
+            y: y + row,
+            from: x,
+            to: x + w,
+            spot: Spot::Panel,
+        })
+        .collect()
 }
 
 /// How much of a row shows: it comes in when listed, and fades as it leaves.

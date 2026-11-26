@@ -172,7 +172,8 @@ impl Page<'_> {
         self.rows.push(Row::of(Line::of(wait)));
     }
 
-    /// A row of the list: `left` from its second cell, `right` at its end;
+    /// A row of the list, a row of the page before it: `left` from its
+    /// second cell, `right` at its end;
     /// on the lighter surface when it is chosen or under the pointer. A
     /// click on it acts on `item`; on what stands at its end, on `end`,
     /// when that is another thing. Answers where its rows start.
@@ -183,6 +184,9 @@ impl Page<'_> {
         right: Vec<Glyph>,
         end: Option<Spot>,
     ) -> usize {
+        // A row of the page between two rows of the list: two switches one
+        // over the other would make one block.
+        self.gap();
         let inner = self.inner;
         let taken = if right.is_empty() {
             0
@@ -764,6 +768,7 @@ impl Page<'_> {
                 0,
             ));
             text.extend(right);
+            self.gap();
             self.rows.push(Row::of(Line::at(2, text)));
             return;
         }

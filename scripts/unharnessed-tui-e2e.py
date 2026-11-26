@@ -104,6 +104,11 @@ def plain(rows):
     return [re.sub(r"\x1b\[[0-9;]*m", "", row) for row in rows]
 
 
+def beside_rail(rows, width=120):
+    """Rows without the folded panel's rail, which stays put on the right while the conversation scrolls."""
+    return [row[:width - 4].rstrip() for row in rows]
+
+
 def scenario_frames():
     trace = Trace("frames")
     size = (120, 34)
@@ -240,7 +245,10 @@ def scenario_colours():
     # 144: the reasoning's grey, once a word has been in for a while.
     check("colours: the reasoning's newest words come in as the answer's do: from the page up past its grey",
           len({g for g in greys if 26 < g < 144}) >= 3 and max(greys) > 200, sorted(greys))
-    first = inks(frames[late][at + 2])
+    # The row runs the page's width: its newest words came in a tenth of a second ago.
+    cooled = late + 0.1
+    frames.update(trace.frames(DEMO, [cooled], "--ansi", "--no-panel", "--size", "120x34"))
+    first = inks(frames[cooled][at + 2])
     check("colours: then they cool to the reasoning's grey", first == {144}, sorted(first))
     check("colours: nothing but colour and style reaches the output",
           all(re.sub(r"\x1b\[[0-9;]*m", "", row).isprintable() for rows in frames.values() for row in rows))
@@ -609,7 +617,8 @@ def scenario_terminal():
     trace.note("-- the screen, after page up:\n" + "\n".join(up))
     # A page is the conversation's rows but one: the row that was first is now the last.
     check("terminal: page up scrolls the conversation back a page, keeping a row of it",
-          up != latest and up[26] == latest[2] and not any("Page weights" in row for row in up), (up[26], latest[2]))
+          up != latest and beside_rail(up)[26] == beside_rail(latest)[2] and not any("Page weights" in row for row in up),
+          (up[26], latest[2]))
     term.keys(b"\x1b[H", "home")
     term.read(0.5)
     trace.note("-- the screen, after home:\n" + "\n".join(term.rows()))
@@ -685,7 +694,7 @@ def scenario_mouse():
           int(lit, 16) > int(dim, 16) and term.cell(work, 5).fg == dim, (dim, lit, term.cell(work, 5).fg))
 
     for label, column, row in (("the answer's text", 10, work + 2), ("the message box", 10, len(folded) - 5),
-                               ("the page's margin beside the line", 0, work), ("past the text's column", 110, work)):
+                               ("the page's margin beside the line", 0, work), ("past the text's column", 115, work)):
         term.click(column, row, label)
     check("mouse: a click on what does not fold changes nothing", term.settles("after clicks beside") == folded)
 
@@ -720,7 +729,7 @@ def scenario_mouse():
     term.mouse("down", 40, 10, "the wheel, down")
     down = term.settles("after the wheel went down twice", 0.5)
     check("mouse: the wheel scrolls the conversation, three rows a notch; the message box stays",
-          down[2:31] == closed[8:37] and down[-6:] == box and down[:2] == closed[:2])
+          beside_rail(down[2:31]) == beside_rail(closed[8:37]) and down[-6:] == box and down[:2] == closed[:2])
     term.mouse("up", 40, 10, "the wheel, up")
     term.mouse("up", 40, 10, "the wheel, up")
     check("mouse: and back", term.settles("after the wheel went up twice", 0.5) == closed)

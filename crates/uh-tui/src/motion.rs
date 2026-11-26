@@ -67,6 +67,28 @@ pub fn lit(base: Rgb, since: f64, at: usize) -> Rgb {
     }
 }
 
+/// How long a line that lands takes to be in: its letters come in one
+/// after another, blue, then turn to their own colour (`landing`).
+pub const LANDS: f64 = 1.6;
+/// The longest its letters take to start, first to last, and the least
+/// time between two; how long one takes to turn from the blue.
+const LAND_SPREAD: f64 = 0.6;
+const LAND_STEP: f64 = 0.03;
+const LAND_COOL: f64 = 0.75;
+
+/// A line landing (the kernel back, a compaction over, a level chosen):
+/// letter `at` of `of`, `since` seconds after the first started. Answers
+/// how far in it is, and how much of the blue it still has, each 0 to 1.
+#[must_use]
+pub fn landing(since: f64, at: usize, of: usize) -> (f32, f32) {
+    let step = (LAND_SPREAD / of.max(1) as f64).min(LAND_STEP);
+    let since = since - step * at as f64;
+    let inn = (since / WAVE_FADE).clamp(0.0, 1.0);
+    let cooled = ((since - WAVE_FADE * 0.6) / LAND_COOL).clamp(0.0, 1.0);
+    let blue = 1.0 - cooled * cooled * (3.0 - 2.0 * cooled);
+    (inn as f32, blue as f32)
+}
+
 /// How long a streamed word takes to come in once the front reaches it.
 pub const WAVE_FADE: f64 = 0.26;
 /// The reasoning's words are grey: from the page to them is half the way to

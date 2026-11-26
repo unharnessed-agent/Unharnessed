@@ -11,10 +11,11 @@ use crate::connect::Spot;
 use crate::draft::Draft;
 use crate::line::{cells, Line};
 use crate::models::{maker, matching, specs, subscribed, Model};
+use crate::motion::progress;
 use crate::providers::Provider;
 use crate::text::{fit, glyphs, width, Glyph, Ink};
-use crate::theme::{INK, RAISED_2};
-use crate::view::{caret, effort_name, with_caret, Area, Ui};
+use crate::theme::{ACCENT, INK, RAISED_2, WHITE};
+use crate::view::{caret, effort_name, landed, with_caret, Area, Ui};
 
 /// The most models the menu shows at once.
 pub const ROWS: usize = 10;
@@ -326,9 +327,14 @@ fn models_entries(
     (wide, entries)
 }
 
+/// How long the effort's fill takes to reach a level.
+const SLIDE: f64 = 0.34;
+
 /// The effort's menu: its name, a row of its surface, then a track with a
-/// stretch per level, lit up to the one in use, each level's name under
-/// its stretch.
+/// stretch per level, filled in the accent up to the one in use (the
+/// extension's slider), each level's name under its stretch. Opening, the
+/// fill runs out from nothing; a level chosen, it runs to it, its end
+/// bright on the way, and the level's name lands.
 fn effort_entries(chat: &Chat, ui: &Ui, column: usize) -> (usize, Vec<Entry>) {
     let names: Vec<String> = chat
         .efforts
@@ -342,32 +348,77 @@ fn effort_entries(chat: &Chat, ui: &Ui, column: usize) -> (usize, Vec<Entry>) {
     let gap = if total(2) + 4 <= column { 2 } else { 1 };
     let used = (chat.effort.as_ref())
         .and_then(|current| chat.efforts.iter().position(|level| level == current));
+    // Where each level's stretch starts on the track, in cells.
+    let starts: Vec<usize> = (wides.iter())
+        .scan(0, |start, wide| {
+            let at = *start;
+            *start += wide + gap;
+            Some(at)
+        })
+        .collect();
+    let end = |level: usize| {
+        starts
+            .get(level)
+            .zip(wides.get(level))
+            .map(|(start, wide)| start + wide)
+    };
+    let target = used.and_then(end).unwrap_or(0) as f64;
+    let (moved, from) = match ui.slid {
+        Some((at, from)) => (
+            progress(ui.wall, at, SLIDE),
+            from.and_then(end).unwrap_or(0) as f64,
+        ),
+        None => (1.0, target),
+    };
+    let fill = from + (target - from) * moved;
+    let rush = (1.0 - moved) as f32;
+    let top = chat.efforts.len().saturating_sub(1);
     let (mut track, mut labels, mut spots) = (Vec::new(), Vec::new(), Vec::new());
-    let mut from = 0;
+    let mut cell: u32 = 0;
     for (at, (name, wide)) in names.iter().zip(&wides).enumerate() {
-        if at > 0 {
-            track.extend(glyphs(&" ".repeat(gap), Ink::faint(), 0));
-            labels.extend(glyphs(&" ".repeat(gap), Ink::faint(), 0));
-        }
         let spot = Spot::Level(at);
         let over = ui.over.as_ref() == Some(&spot);
-        let lit = used.is_some_and(|used| at <= used);
-        let ink = match (lit, over) {
-            (true, _) => Ink::of(INK, 0.8),
-            (false, true) => Ink::of(INK, 0.4),
-            (false, false) => Ink::of(INK, 0.16),
-        };
-        track.extend(glyphs(&"━".repeat(*wide), ink, 0));
+        if at > 0 {
+            // The fill runs on between the levels it covers.
+            for _ in 0..gap {
+                let lit = f64::from(cell) + 0.5 < fill;
+                let ink = Ink::of(ACCENT, 1.0);
+                track.extend(glyphs(if lit { "━" } else { " " }, ink, 0));
+                cell += 1;
+            }
+            labels.extend(glyphs(&" ".repeat(gap), Ink::faint(), 0));
+        }
+        for _ in 0..*wide {
+            let centre = f64::from(cell) + 0.5;
+            let ink = if centre < fill {
+                // Its end comes near white while it runs.
+                let near = (1.0 - (fill - centre) / 3.0).max(0.0) as f32 * rush;
+                Ink::of(ACCENT.mix(WHITE, 0.75 * near), 1.0)
+            } else if over {
+                Ink::of(ACCENT, 0.4)
+            } else {
+                Ink::of(INK, 0.16)
+            };
+            track.extend(glyphs("━", ink, 0));
+            cell += 1;
+        }
         let ink = match (used == Some(at), over) {
+            // The top level stays in the accent, as the extension's does.
+            (true, _) if at == top => Ink::accent(),
             (true, _) => Ink::text(),
             (false, true) => Ink::of(INK, 0.78),
             (false, false) => Ink::faint(),
         };
-        labels.extend(glyphs(&format!("{name:<wide$}"), ink, 0));
+        let mut label = glyphs(&format!("{name:<wide$}"), ink, 0);
+        if let Some((when, _)) = ui.slid.filter(|_| used == Some(at)) {
+            let letters = name.chars().count().min(label.len());
+            landed(&mut label[..letters], ui.wall - when);
+        }
+        labels.extend(label);
         // A click between two levels lands on the nearer one; the rows start two cells in.
-        let (left, right) = (2 + from, 2 + from + wide);
+        let start = starts[at];
+        let (left, right) = (2 + start, 2 + start + wide);
         spots.push((left.saturating_sub(gap / 2), right + gap - gap / 2, spot));
-        from += wide + gap;
     }
     let wide = (total(gap) + 4).max(20);
     let entries = vec![

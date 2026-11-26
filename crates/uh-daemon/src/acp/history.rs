@@ -189,6 +189,11 @@ pub(super) fn replay(entries: &[FileEntry], leaf: Option<&str>) -> Vec<Vec<AcpSe
                     tokens_before: Some(payload.tokens_before),
                     summary: Some(payload.summary.clone()),
                 });
+                // It is `/compact`'s answer: its turn is over, as a command's is.
+                if replay.command {
+                    replay.end = Some(("done", None));
+                    replay.open = false;
+                }
             }
             _ => {}
         }
@@ -212,6 +217,8 @@ struct Replay {
     rewind_to: Option<String>,
     /// The next prompt was steered into the turn under way.
     steered: bool,
+    /// The last turn is a slash command's.
+    command: bool,
 }
 
 impl Replay {
@@ -312,7 +319,10 @@ impl Replay {
         details: Option<&Value>,
     ) {
         match kind {
-            SESSION_SLASH_COMMAND_CUSTOM_TYPE => self.start_prompt(content),
+            SESSION_SLASH_COMMAND_CUSTOM_TYPE => {
+                self.start_prompt(content);
+                self.command = true;
+            }
             SESSION_SLASH_COMMAND_RESULT_CUSTOM_TYPE if display => {
                 let command = details.and_then(|details| details.get("command"));
                 let name = command
@@ -368,6 +378,7 @@ impl Replay {
 
     fn open_turn(&mut self, wake: Option<&str>, rewind_to: Option<String>) {
         self.finish();
+        self.command = false;
         let origin = if wake.is_some() { "wake" } else { "prompt" };
         self.turns.push(vec![info(&UnharnessedSessionMeta {
             turn_start: Some(UnharnessedTurnStartMeta {

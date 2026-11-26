@@ -16,7 +16,9 @@
 //! what it asks for goes to the agent, a sign-in to an MCP server takes
 //! the providers' sign-in screen, and a restart starts another agent on
 //! the conversation. A message goes with the images attached to it (files
-//! dropped on the terminal, the clipboard's image); one that takes an
+//! dropped on the terminal, the paths VS Code's terminal types for them
+//! taken as such; the clipboard's image, at Ctrl+V or at a Cmd+V the
+//! terminal pastes nothing for); one that takes an
 //! earlier message's place goes once the agent went back to before that
 //! one. The frames exchanged can be recorded, in the format `--tui-replay`
 //! plays.
@@ -37,7 +39,7 @@ use serde_json::{json, Value};
 
 use crate::agent::{Agent, Launch, Told};
 use crate::chat::{self, Chat, KILL, REWIND, STEER};
-use crate::clipboard;
+use crate::clipboard::{self, Clip};
 use crate::connect::{self, Act, Connect, Mode, Spot};
 use crate::desk::{self, Click, Desk, FRAME, FRAME_LEAST};
 use crate::files;
@@ -51,7 +53,7 @@ use crate::prefs::{Prefs, Tab, Wish};
 use crate::providers::{self, Key};
 use crate::settings;
 use crate::slash::{self, Command};
-use crate::view::Ui;
+use crate::view::{Edited, Editing, Ui};
 
 /// How often the screen is drawn again while nothing moves: a running
 /// command's time goes on.
@@ -76,8 +78,11 @@ const SECRETS: [(&str, &str); 3] = [
     ("_unharnessed/providers/login_answer", "answer"),
     (settings::MCP_SET_TOKEN, "token"),
 ];
-/// What an image from the clipboard is called.
-const PASTED: &str = "pasted image";
+/// How long a letter of what the terminal writes at once waits for the
+/// next, and for how long it is held so: VS Code's terminal types the
+/// path of a file dropped on it, in pieces of 50 characters 5 ms apart.
+const RUN_GAP: Duration = Duration::from_millis(25);
+const RUN_MOST: Duration = Duration::from_millis(400);
 
 /// An image sent with a message.
 #[derive(Clone, Debug)]
@@ -123,8 +128,10 @@ enum Came {
     Left(u64),
     /// The session's folder was listed: its files.
     Files(Vec<String>),
-    /// The clipboard was read: its image, or why there is none.
-    Clip(Result<Vec<u8>, String>),
+    /// The clipboard was read: its image, or why there is none; and the
+    /// paste that asked, a file's name, written when the clipboard does
+    /// not hold that file.
+    Clip(Result<Clip, String>, Option<String>),
     /// The terminal can no longer be read.
     Gone,
 }
@@ -365,7 +372,7 @@ impl Session {
                 }
                 // What the turn did not take goes first of what waits.
                 let untaken = self.chat.returned();
-                self.desk.ui.waiting.splice(0..0, untaken);
+                self.desk.ui.wait_first(untaken);
                 self.follow();
             }
         }
@@ -496,6 +503,10 @@ impl Session {
             }
         }
         let ui = &mut self.desk.ui;
+        // Once none waits, the next ones open on the message box, and go by themselves.
+        if ui.waiting.is_empty() && ui.rushed.is_empty() && self.chat.steering().next().is_none() {
+            (ui.queue.shut, ui.queue.paused) = (false, false);
+        }
         if let Some(edit) = &mut self.edit {
             // Nothing else goes before the message that takes an earlier
             // one's place: the agent goes back first, once nothing runs.
@@ -516,12 +527,8 @@ impl Session {
                 }),
             );
         } else if !self.chat.busy() {
-            // Nothing runs: what was for the turn goes first, as a prompt.
-            let line = if ui.rushed.is_empty() {
-                &mut ui.waiting
-            } else {
-                &mut ui.rushed
-            };
+            // Nothing runs: what was for the turn goes first, as a prompt;
+            // then the first that waits, unless it is being changed.
             if let Some(text) = self.start.first.take() {
                 let images = std::mem::take(&mut self.start.images);
                 let images = images.into_iter().map(|image| Attached {
@@ -534,8 +541,11 @@ impl Session {
                     images: images.collect(),
                 };
                 self.prompt(&session, &first);
-            } else if !line.is_empty() {
-                let next = line.remove(0);
+            } else if !ui.rushed.is_empty() {
+                let next = ui.rushed.remove(0);
+                self.prompt(&session, &next);
+            } else if !ui.queue.paused && ui.waiting.first().is_some_and(|waiting| !waiting.held) {
+                let next = ui.waiting.remove(0).message;
                 self.prompt(&session, &next);
             }
         } else if let Some(turn) = self.chat.joinable() {
@@ -638,7 +648,7 @@ impl Session {
         let ui = &mut self.desk.ui;
         if text.is_empty() && ui.images.is_empty() {
             if self.chat.busy() && !ui.waiting.is_empty() && ui.editing.is_none() {
-                ui.rushed.push(ui.waiting.remove(0));
+                ui.rushed.push(ui.waiting.remove(0).message);
             }
             return true;
         }
@@ -648,9 +658,19 @@ impl Session {
             images: std::mem::take(&mut ui.images),
         };
         ui.said = None;
+        // It takes the place of a message that waits, in the line.
+        if let Some(Edited::Waiting(id)) = ui.editing.as_ref().map(|editing| editing.of) {
+            self.desk.keep();
+            let ui = &mut self.desk.ui;
+            match ui.waiting.iter_mut().find(|waiting| waiting.id == id) {
+                Some(waiting) => waiting.message = message,
+                None => ui.wait(message),
+            }
+            return true;
+        }
         // It takes an earlier message's place: the agent goes back to
         // before that one first, and what was being written comes back.
-        if let Some(turn) = ui.editing.as_ref().map(|editing| editing.turn) {
+        if let Some(turn) = ui.editing.as_ref().and_then(Editing::turn) {
             self.desk.keep();
             let to = (self.chat.turns.get(turn)).and_then(|turn| turn.rewind.clone());
             if let Some(to) = to {
@@ -665,8 +685,12 @@ impl Session {
             }
         }
         let ui = &mut self.desk.ui;
-        let line = if now { &mut ui.rushed } else { &mut ui.waiting };
-        line.push(message);
+        // While the ones that wait are paused, a message sent goes at once.
+        if now || (ui.queue.paused && !self.chat.busy()) {
+            ui.rushed.push(message);
+        } else {
+            ui.wait(message);
+        }
         ui.top = None;
         true
     }
@@ -674,12 +698,24 @@ impl Session {
     /// The messages that waited come back to the message box, before what
     /// is written there: first the ones the running turn had not taken.
     fn unqueue(&mut self) {
+        // A message that waits being changed: it is as the box has it.
+        let held = (self.desk.ui.waiting.iter()).position(|waiting| waiting.held);
+        if let Some(at) = held {
+            if let Some(changed) = self.desk.keep() {
+                if changed.text.trim().is_empty() && changed.images.is_empty() {
+                    self.desk.ui.waiting.remove(at);
+                } else {
+                    self.desk.ui.waiting[at].message = changed;
+                }
+            }
+        }
         let ui = &mut self.desk.ui;
+        ui.queue.paused = false;
         let mut parts = self.chat.unsteer();
         // The message that waited to take an earlier one's place comes back as one more.
         parts.extend(self.edit.take().map(|edit| edit.message));
         parts.append(&mut ui.rushed);
-        parts.append(&mut ui.waiting);
+        parts.extend(ui.waiting.drain(..).map(|waiting| waiting.message));
         if parts.is_empty() {
             return;
         }
@@ -698,11 +734,35 @@ impl Session {
         ui.images = images;
     }
 
-    /// The running turn stops; what waited for its end no longer goes by itself.
+    /// The running turn stops; what waited for its end no longer goes by
+    /// itself: it waits on the message box, first what was sent into the
+    /// turn and not taken, until one of it is sent or they play again.
     fn stop(&mut self) {
-        self.unqueue();
+        self.pause();
         if let Some(session) = self.open().filter(|_| self.chat.busy()) {
             self.notify("session/cancel", &json!({ "sessionId": session }));
+        }
+    }
+
+    /// What waited for the running turn, or was on its way into it, waits
+    /// until the user sends it. The message that waited to take an earlier
+    /// one's place comes back to the message box, before what is written.
+    fn pause(&mut self) {
+        let mut first = self.chat.unsteer();
+        let ui = &mut self.desk.ui;
+        first.append(&mut ui.rushed);
+        ui.wait_first(first);
+        ui.queue.paused = !ui.waiting.is_empty();
+        if let Some(edit) = self.edit.take() {
+            let ui = &mut self.desk.ui;
+            let written = ui.draft.take();
+            let texts = [edit.message.text, written];
+            let texts: Vec<_> = texts.into_iter().filter(|text| !text.is_empty()).collect();
+            ui.draft.insert(&texts.join("\n\n"));
+            let mut images = edit.message.images;
+            images.append(&mut ui.images);
+            images.truncate(MOST);
+            ui.images = images;
         }
     }
 
@@ -817,7 +877,9 @@ impl Session {
             // The messages sent before, one by one, to change one.
             KeyCode::Up if shift => self.edit_step(-1),
             KeyCode::Down if shift => self.edit_step(1),
-            KeyCode::Char('v') if ctrl => self.clip(),
+            KeyCode::Char('v') if ctrl || key.modifiers.contains(KeyModifiers::SUPER) => {
+                self.clip(None);
+            }
             KeyCode::Char('s') if ctrl => self.settings(),
             // On an empty message, the last image goes.
             KeyCode::Backspace if empty && !ui.images.is_empty() => {
@@ -826,7 +888,7 @@ impl Session {
             KeyCode::Enter if plain => return self.submit(false),
             KeyCode::Enter if key.modifiers == KeyModifiers::CONTROL => return self.submit(true),
             KeyCode::Char('o') if ctrl => self.desk.ui.folds.toggle_all(),
-            KeyCode::Char('k') if ctrl => self.desk.ui.panel = !self.desk.ui.panel,
+            KeyCode::Char('k') if ctrl => self.desk.toggle_panel(),
             KeyCode::Char('n') if ctrl => self.new_chat(),
             KeyCode::Char('r') if ctrl => self.history(),
             KeyCode::Char('p') if ctrl => self.models(),
@@ -854,7 +916,27 @@ impl Session {
             text,
             images: images.clone(),
         };
-        self.desk.edit(turn, written);
+        self.desk.edit(Edited::Turn(turn), written);
+    }
+
+    /// The message that waits numbered `id` comes back to the message box
+    /// to be changed; the line waits at it.
+    fn hold(&mut self, id: u64) {
+        let found = (self.desk.ui.waiting.iter()).find(|waiting| waiting.id == id);
+        if let Some(written) = found.map(|waiting| waiting.message.clone()) {
+            self.desk.edit(Edited::Waiting(id), written);
+        }
+    }
+
+    /// The message that waits numbered `id` goes into the running turn
+    /// now, or first once nothing runs.
+    fn rush(&mut self, id: u64) {
+        let ui = &mut self.desk.ui;
+        let at = (ui.waiting.iter()).position(|waiting| waiting.id == id && !waiting.held);
+        if let Some(at) = at {
+            let message = ui.waiting.remove(at).message;
+            ui.rushed.push(message);
+        }
     }
 
     /// From the message being changed to the one sent before it (`by`
@@ -868,7 +950,8 @@ impl Session {
             .map(|(at, _)| at)
             .collect();
         let on = (self.desk.ui.editing.as_ref())
-            .and_then(|editing| turns.iter().position(|turn| *turn == editing.turn));
+            .and_then(Editing::turn)
+            .and_then(|editing| turns.iter().position(|turn| *turn == editing));
         let to = match (on, by < 0) {
             (None, true) => turns.len().checked_sub(1),
             (None, false) => None,
@@ -914,23 +997,45 @@ impl Session {
         self.chat.settings.view.is_none() || self.chat.settings.on("images.autoResize")
     }
 
-    /// Ctrl+V: the image on the clipboard joins the message. The system's
-    /// tool is asked on a thread of its own: it takes a moment.
-    fn clip(&mut self) {
+    /// Ctrl+V, Cmd+V: the image on the clipboard joins the message. The
+    /// system's tool is asked on a thread of its own: it takes a moment.
+    /// `asked`: what was pasted, a file's name: the file joins it when the
+    /// clipboard holds it, else the name is written.
+    fn clip(&mut self, asked: Option<String>) {
         if std::mem::replace(&mut self.reading.clipboard, true) {
+            if let Some(text) = asked {
+                self.desk.paste(&text);
+            }
             return;
         }
         let tell = self.tell.clone();
         std::thread::spawn(move || {
-            let _ = tell.send(Came::Clip(clipboard::image()));
+            let _ = tell.send(Came::Clip(clipboard::image(), asked));
         });
     }
 
     /// The clipboard was read.
-    fn clipped(&mut self, read: Result<Vec<u8>, String>) {
+    fn clipped(&mut self, read: Result<Clip, String>, asked: Option<String>) {
         self.reading.clipboard = false;
         let shrinks = self.shrinks();
-        let image = read.and_then(|bytes| message::attach(PASTED, &bytes, shrinks));
+        let image = match (read, asked) {
+            (Ok(Clip::File(path)), Some(text))
+                if path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy() == text) =>
+            {
+                message::read(&path, shrinks)
+            }
+            (_, Some(text)) => {
+                self.desk.paste(&text);
+                return;
+            }
+            (Ok(Clip::File(path)), None) => message::read(&path, shrinks),
+            (Ok(Clip::Image(bytes)), None) => {
+                message::attach(&message::unnamed(&self.desk.ui.images), &bytes, shrinks)
+            }
+            (Err(why), None) => Err(why),
+        };
         self.attach(vec![image]);
     }
 
@@ -1219,6 +1324,10 @@ impl Session {
         let open = matches!(self.desk.ui.pick, Some(Pick::Effort));
         let can = self.open().is_some() && self.chat.efforts.len() > 1;
         self.desk.ui.pick = (!open && can).then_some(Pick::Effort);
+        // Opening, its track fills from nothing.
+        if self.desk.ui.pick.is_some() {
+            self.desk.ui.slid = Some((self.desk.ui.wall, None));
+        }
     }
 
     /// An option of the session is set: the agent answers what they all are then.
@@ -1245,6 +1354,9 @@ impl Session {
     fn level(&mut self, at: usize) {
         let level = self.chat.efforts.get(at).cloned();
         if let Some(level) = level.filter(|level| Some(level) != self.chat.effort.as_ref()) {
+            let from = (self.chat.effort.as_ref())
+                .and_then(|current| self.chat.efforts.iter().position(|level| level == current));
+            self.desk.ui.slid = Some((self.desk.ui.wall, from));
             self.set("thought_level", &level);
         }
     }
@@ -1634,6 +1746,15 @@ impl Session {
             Spot::Keep => {
                 self.desk.keep();
             }
+            Spot::Queue => self.desk.ui.toggle_queue(),
+            Spot::Resume => self.desk.ui.queue.paused = false,
+            Spot::Waiting(id) | Spot::Hold(id) => self.hold(id),
+            Spot::Rush(id) => self.rush(id),
+            Spot::Unqueue(id) => {
+                let ui = &mut self.desk.ui;
+                ui.waiting
+                    .retain(|waiting| waiting.id != id || waiting.held);
+            }
             Spot::Model => self.models(),
             Spot::Effort => self.effort(),
             Spot::Choice(at) => self.choose(at),
@@ -1669,6 +1790,8 @@ impl Session {
                 }
             }
             Spot::Port(port) => (self.start.open)(&format!("http://localhost:{port}/")),
+            // The desk opens and closes the panel itself, in a replay too.
+            Spot::Panel => self.desk.toggle_panel(),
             Spot::Play => self.resume_goal(),
             Spot::EndGoal => self.end_goal(),
         }
@@ -1696,7 +1819,7 @@ impl Session {
             Came::Agent(_, Told::Closed) => return self.closed(),
             Came::Left(run) => self.left(run),
             Came::Files(files) => self.listed(files),
-            Came::Clip(read) => self.clipped(read),
+            Came::Clip(read, asked) => self.clipped(read, asked),
             Came::Gone => return false,
         }
         true
@@ -1760,14 +1883,15 @@ impl Session {
             ui.pick = None;
             // Files dropped on the terminal come as their paths: the images among them join the message.
             let home = std::env::var_os("HOME").map(PathBuf::from);
-            let images = message::dropped(text, home.as_deref())
-                .filter(|paths| paths.iter().all(|path| path.is_file()));
-            match images {
+            match message::images(text, home.as_deref()) {
                 Some(paths) => {
                     let shrinks = self.shrinks();
                     let read = paths.iter().map(|path| message::read(path, shrinks));
                     self.attach(read.collect());
                 }
+                // Cmd+V on an image alone: the terminal pastes the text it found, none.
+                None if text.is_empty() => self.clip(None),
+                None if message::named(text) => self.clip(Some(text.to_string())),
                 None => self.desk.paste(text),
             }
         }
@@ -1840,18 +1964,72 @@ fn recording(start: &Start) -> io::Result<Option<BufWriter<File>>> {
 /// agent at once.
 fn reader(tell: mpsc::Sender<Came>, left: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let mut next = None;
         while !left.load(Ordering::Relaxed) {
-            let came = match event::poll(Duration::from_millis(50)) {
-                Ok(false) => continue,
-                Ok(true) => event::read().map_or(Came::Gone, Came::Screen),
-                Err(_) => Came::Gone,
+            let read = match next.take() {
+                Some(event) => Ok(event),
+                None => match event::poll(Duration::from_millis(50)) {
+                    Ok(false) => continue,
+                    Ok(true) => event::read(),
+                    Err(error) => Err(error),
+                },
             };
-            let gone = matches!(came, Came::Gone);
-            if tell.send(came).is_err() || gone {
+            let Ok(event) = read else {
+                let _ = tell.send(Came::Gone);
                 break;
+            };
+            // A path starts so: what follows at once may be a file dropped on VS Code's terminal.
+            let mut events = vec![event];
+            if typed(&events[0]).is_some_and(|first| matches!(first, '\'' | '"' | '/')) {
+                next = at_once(&mut events, home.as_deref());
+            }
+            for event in events {
+                if tell.send(Came::Screen(event)).is_err() {
+                    return;
+                }
             }
         }
     })
+}
+
+/// The character a key types: one pressed alone or with Shift.
+fn typed(event: &Event) -> Option<char> {
+    match event {
+        Event::Key(KeyEvent {
+            code: KeyCode::Char(typed),
+            modifiers,
+            kind: KeyEventKind::Press,
+            ..
+        }) if (*modifiers - KeyModifiers::SHIFT).is_empty() => Some(*typed),
+        _ => None,
+    }
+}
+
+/// What the terminal writes at once after the first of `keys`, read into
+/// them: the path of a file dropped on VS Code's terminal comes so, typed
+/// and not pasted. When they are the paths of images, they turn into the
+/// paste the other terminals make of them. Answers what came after them.
+fn at_once(keys: &mut Vec<Event>, home: Option<&Path>) -> Option<Event> {
+    let mut text: String = keys.iter().filter_map(typed).collect();
+    let since = Instant::now();
+    let mut after = None;
+    while since.elapsed() < RUN_MOST && matches!(event::poll(RUN_GAP), Ok(true)) {
+        let Ok(event) = event::read() else {
+            break;
+        };
+        if let Some(typed) = typed(&event) {
+            text.push(typed);
+            keys.push(event);
+        } else {
+            after = Some(event);
+            break;
+        }
+    }
+    if keys.len() > 1 && message::images(&text, home).is_some() {
+        *keys = vec![Event::Paste(text)];
+    }
+    after
 }
 
 /// Runs a live session in the terminal; answers the process's exit code.
@@ -1897,15 +2075,18 @@ pub fn run(start: Start) -> i32 {
     };
     let left = Arc::new(AtomicBool::new(false));
     let reader = reader(tell.clone(), Arc::clone(&left));
+    let mut ui = Ui {
+        commands: Some(Arc::new(slash::with_own(&[]))),
+        live: true,
+        // `--resume` alone: the saved conversations, to choose from.
+        history: start.choose.then(History::default),
+        ..Ui::default()
+    };
+    for text in &start.then {
+        ui.wait(Message::of(text));
+    }
     let mut session = Session {
-        desk: Desk::new(Ui {
-            waiting: start.then.iter().map(|text| Message::of(text)).collect(),
-            commands: Some(Arc::new(slash::with_own(&[]))),
-            live: true,
-            // `--resume` alone: the saved conversations, to choose from.
-            history: start.choose.then(History::default),
-            ..Ui::default()
-        }),
+        desk: Desk::new(ui),
         chat: Chat::default(),
         agent: Some(agent),
         stage: Stage::Opening,

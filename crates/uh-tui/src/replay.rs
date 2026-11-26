@@ -279,7 +279,7 @@ impl Player<'_> {
             KeyCode::Left if shift => self.seek(self.clock.now() - 2.0),
             KeyCode::Right if shift => self.seek(self.clock.now() + 2.0),
             KeyCode::Char('o') if ctrl => self.desk.ui.folds.toggle_all(),
-            KeyCode::Char('k') if ctrl => self.desk.ui.panel = !self.desk.ui.panel,
+            KeyCode::Char('k') if ctrl => self.desk.toggle_panel(),
             _ => {
                 self.desk.write(key);
             }
