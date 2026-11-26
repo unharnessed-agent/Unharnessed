@@ -2,7 +2,7 @@
   "name": "unharnessed-agent",
   "displayName": "Unharnessed Agent",
   "description": "A coding agent with exactly one tool: a persistent Python REPL. Everything else, the model writes itself.",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "publisher": "Unharnessed",
   "license": "MIT",
   "private": true,
