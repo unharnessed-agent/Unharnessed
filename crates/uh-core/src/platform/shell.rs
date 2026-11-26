@@ -214,6 +214,43 @@ pub fn resolve_kernel_bash_shell(custom_shell_path: Option<&str>) -> Option<Stri
         .map(str::to_string)
 }
 
+/// The shells the kernel's `bash()` is given, which the system prompt
+/// names too. On Windows: PowerShell, its default, and Git Bash, for
+/// `bash(command, shell="bash")`, each `None` when not installed. Elsewhere
+/// neither: `bash()` finds bash itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KernelShells {
+    pub powershell: Option<String>,
+    pub git_bash: Option<String>,
+}
+
+impl KernelShells {
+    #[must_use]
+    pub fn resolve() -> Self {
+        if !cfg!(windows) {
+            return Self::default();
+        }
+        Self {
+            powershell: resolve_kernel_powershell(),
+            git_bash: resolve_kernel_bash_shell(None),
+        }
+    }
+}
+
+/// PowerShell 7 in its default install dir, else the Windows PowerShell 5.1
+/// every Windows ships. Hardcoded paths, never PATH, for the reason given at
+/// [`resolve_kernel_bash_shell`].
+fn resolve_kernel_powershell() -> Option<String> {
+    const WINDOWS_POWERSHELL_PATHS: [&str; 2] = [
+        r"C:\Program Files\PowerShell\7\pwsh.exe",
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+    ];
+    WINDOWS_POWERSHELL_PATHS
+        .into_iter()
+        .find(|path| std::path::Path::new(path).exists())
+        .map(str::to_string)
+}
+
 #[cfg(not(any(unix, windows)))]
 pub fn resolve_kernel_bash_shell(custom_shell_path: Option<&str>) -> Option<String> {
     custom_shell_path

@@ -1,6 +1,7 @@
 //! Layered system-prompt assembly: static layer files first (cacheable),
 //! every session-specific value last. See the parent module docs.
 
+use crate::platform::KernelShells;
 use crate::settings::ModelInstructions;
 use crate::skills::{format_skills_for_prompt, Skill};
 
@@ -73,6 +74,9 @@ pub struct BuildSystemPromptOptions<'a> {
     pub model_instructions: &'a [ModelInstructions],
     /// Whether the resolved model accepts image input, when known.
     pub vision_capable: Option<bool>,
+    /// The shells the kernel's `bash()` is given, for the OS and shell
+    /// lines; `None` leaves both out.
+    pub shells: Option<KernelShells>,
     /// Active tools. Tool schemas carry tool descriptions outside the prompt.
     pub selected_tools: Option<Vec<&'a str>>,
     /// Additional guideline bullets appended to the dynamic tail.
@@ -184,7 +188,7 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
     segments.push(PromptSegment::dynamic_segment(
         "environment",
         "session configuration",
-        environment_section(options),
+        environment_section(options, has_ipython),
     ));
 
     let role = session_role_section(has_ipython);
@@ -265,7 +269,7 @@ fn context_files_section(context_files: &[(String, String)]) -> String {
     lines.join("\n")
 }
 
-fn environment_section(options: &BuildSystemPromptOptions) -> String {
+fn environment_section(options: &BuildSystemPromptOptions, has_ipython: bool) -> String {
     let cwd = options.cwd.replace('\\', "/");
     let messages_path = options
         .messages_path
@@ -276,6 +280,12 @@ fn environment_section(options: &BuildSystemPromptOptions) -> String {
         format!("Current date: {}", today()),
         format!("Working directory: {cwd}"),
     ];
+    if let Some(shells) = &options.shells {
+        lines.push(format!("OS: {}", os_name()));
+        if has_ipython {
+            lines.push(format!("Shell: {}", shell_note(shells)));
+        }
+    }
     match options.vision_capable {
         Some(true) => lines.push(
             "Image input: this model can see images; `attach_image` loads them into context."
@@ -292,6 +302,43 @@ fn environment_section(options: &BuildSystemPromptOptions) -> String {
         uh_types::ai::SESSION_TAIL_PREFIX
     ));
     lines.join("\n")
+}
+
+fn os_name() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "macOS",
+        "linux" => "Linux",
+        "windows" => "Windows",
+        other => other,
+    }
+}
+
+/// What `bash()` runs: bash, or on Windows the PowerShell and Git Bash the
+/// kernel is given.
+fn shell_note(shells: &KernelShells) -> String {
+    if !cfg!(windows) {
+        return "`bash()` runs bash.".to_string();
+    }
+    let git_bash = shells.git_bash.is_some();
+    let mut note = match shells.powershell.as_deref() {
+        Some(path) if path.ends_with("pwsh.exe") => {
+            "`bash()` runs PowerShell 7 (pwsh), so write PowerShell, not bash \
+             (`Get-ChildItem`, `Select-String`, `$env:NAME`)."
+        }
+        Some(_) => {
+            "`bash()` runs Windows PowerShell 5.1, so write PowerShell, not bash \
+             (`Get-ChildItem`, `Select-String`, `$env:NAME`); it has no `&&` or `||`, chain with `;`."
+        }
+        None if git_bash => return "`bash()` runs Git Bash.".to_string(),
+        None => return "`bash()` finds neither PowerShell nor Git Bash, so it fails.".to_string(),
+    }
+    .to_string();
+    if git_bash {
+        note.push_str(
+            " `bash(command, shell=\"bash\")` runs Git Bash instead, for a project's `.sh` scripts.",
+        );
+    }
+    note
 }
 
 fn session_role_section(has_ipython: bool) -> String {

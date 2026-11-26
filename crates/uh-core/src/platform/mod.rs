@@ -22,4 +22,4 @@ pub use process::{
 // The rename-onto-destination primitive (bounded win32 destination-busy
 // retry, TS `renameOntoSync`).
 pub use rename::rename_onto;
-pub use shell::{get_shell_config, resolve_kernel_bash_shell, ShellConfig};
+pub use shell::{get_shell_config, resolve_kernel_bash_shell, KernelShells, ShellConfig};

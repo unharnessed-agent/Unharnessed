@@ -243,7 +243,7 @@ class BashHandle:
     handle; later awaits only wait and cancelling them leaves it running.
     """
 
-    def __init__(self, command: str) -> None:
+    def __init__(self, command: str, shell: str | None = None) -> None:
         self.command = command
         # Set by _arm_timeout; stopped by it: the notice says so.
         self._timeout: float | None = None
@@ -321,7 +321,7 @@ class BashHandle:
             )
         else:
             # Windows lacks a foreground-status channel, so its exit drain stays best-effort.
-            script = _with_prefix(command)
+            argv = _windows_argv(command, shell)
             self._job = _winjob.create_job()
             if self._job is None:
                 # Nothing spawned yet, so nothing can leak: refuse to start.
@@ -339,9 +339,7 @@ class BashHandle:
                     stdin=status_write,
                 )
             else:
-                self._proc = _winjob.spawn_in_job(
-                    self._job, [_shell(), "-c", script], cwd=os.getcwd(), env=_child_env()
-                )
+                self._proc = _winjob.spawn_in_job(self._job, argv, cwd=os.getcwd(), env=_child_env())
         except BaseException:
             for fd in (self._status_read, self._wake_read, self._wake_write):
                 if fd >= 0:
@@ -1014,8 +1012,15 @@ class BashHandle:
         return f"<BashHandle pid={self._pid} {state} command={self.command!r}>"
 
 
-def bash(command: str, timeout: float | None = _DEFAULT_TIMEOUT) -> BashHandle:
+def bash(
+    command: str, timeout: float | None = _DEFAULT_TIMEOUT, shell: str | None = None
+) -> BashHandle:
     """Start a shell command immediately; await the handle for the result.
+
+    The command runs in bash on POSIX. On Windows it runs in PowerShell (the
+    host's UNHARNESSED_POWERSHELL), and `shell="bash"` runs it in Git Bash
+    instead (UNHARNESSED_BASH_SHELL), as does a host that found no PowerShell;
+    POSIX accepts `shell="bash"` as a no-op.
 
     A command whose process group still runs after `timeout` seconds (10 min
     by default) gets SIGTERM, then SIGKILL after 5 s; a line in its output and
@@ -1042,8 +1047,11 @@ def bash(command: str, timeout: float | None = _DEFAULT_TIMEOUT) -> BashHandle:
         # Also refuses NaN and inf: threading.Timer cannot wait past TIMEOUT_MAX.
         if not 0 < timeout <= threading.TIMEOUT_MAX:
             raise ValueError("timeout must be a positive number of seconds, or None for no limit")
+    if shell not in (None, "bash"):
+        raise ValueError('shell must be None (the default shell) or "bash"')
     _install_shutdown_hook()
-    handle = BashHandle(command)
+    # POSIX always runs bash: only Windows takes the shell choice.
+    handle = BashHandle(command) if _IS_POSIX else BashHandle(command, shell)
     if timeout is not None:
         handle._arm_timeout(timeout)
     return handle
@@ -1060,14 +1068,40 @@ def _shell() -> str:
         # Never consult PATH on Windows: a repo-controlled PATH could supply
         # the shell. The host injects UNHARNESSED_BASH_SHELL when one exists.
         raise RuntimeError(
-            "bash() needs UNHARNESSED_BASH_SHELL set to the absolute path of a "
-            "POSIX shell on Windows (e.g. install Git Bash in its default "
-            "location so the host injects it)"
+            'bash(command, shell="bash") needs Git Bash on Windows: install Git for '
+            "Windows in its default location (C:\\Program Files\\Git) and start a new "
+            "session, or set UNHARNESSED_BASH_SHELL to the absolute path of a bash"
         )
     # PATH fallback only serves bare/standalone POSIX runtime use: the host
     # always injects UNHARNESSED_BASH_SHELL (an absolute path) when a shell exists.
     shell = shutil.which("bash")
     return shell or "/bin/sh"
+
+
+# One line, so an error's line number is the command's plus one. Progress bars
+# only garble captured output; UTF-8 matches how the output is decoded.
+_POWERSHELL_PRELUDE = (
+    "$ProgressPreference = 'SilentlyContinue'; "
+    "try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch {}; "
+    "$OutputEncoding = New-Object System.Text.UTF8Encoding $false\n"
+)
+# -Command exits 0 or 1 from $?; a failed native program's own code is kept.
+_POWERSHELL_EXIT = "\nexit $(if ($?) { 0 } elseif ($LASTEXITCODE) { $LASTEXITCODE } else { 1 })\n"
+
+
+def _windows_argv(command: str, shell: str | None) -> list[str]:
+    # Same trust rule as _shell(): the host injects absolute paths, never PATH.
+    powershell = os.environ.get("UNHARNESSED_POWERSHELL")
+    if shell == "bash" or not powershell:
+        return [_shell(), "-c", _with_prefix(command)]
+    if not os.path.isabs(powershell):
+        raise ValueError("UNHARNESSED_POWERSHELL must be an absolute path")
+    # Bypass applies to this process only: a project's .ps1 scripts run under
+    # a Restricted machine policy too.
+    return [
+        powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+        "-Command", _POWERSHELL_PRELUDE + command + _POWERSHELL_EXIT,
+    ]
 
 
 def _with_prefix(command: str) -> str:

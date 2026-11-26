@@ -397,6 +397,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             .collect();
         let skills = resources.skills.clone();
         let active_tool_names = active_tool_names.clone();
+        let shells = crate::platform::KernelShells::resolve();
         Arc::new(move |model: &str, vision_capable: bool| {
             crate::prompts::system_prompt::build_system_prompt(
                 &crate::prompts::system_prompt::BuildSystemPromptOptions {
@@ -404,6 +405,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                     model: Some(model),
                     model_instructions: &model_instructions,
                     vision_capable: Some(vision_capable),
+                    shells: Some(shells.clone()),
                     cwd: cwd.clone(),
                     messages_path: messages_path.clone(),
                     context_files: context_files.clone(),

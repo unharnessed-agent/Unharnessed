@@ -97,18 +97,22 @@ pub fn kernel_provisioner(
     on_background_work_settled: Option<crate::kernel::shared::BackgroundWorkSettledCallback>,
     on_unavailable_skills: Option<crate::kernel::provisioner::UnavailableSkillsCallback>,
 ) -> Arc<KernelProvisioner> {
-    let mut env = HashMap::with_capacity(1);
+    let mut env = HashMap::with_capacity(2);
     env.insert(
         "UNHARNESSED_CODING_AGENT_DIR".to_string(),
         agent_dir.to_string_lossy().to_string(),
     );
+    let shells = crate::platform::KernelShells::resolve();
+    if let Some(powershell) = shells.powershell {
+        env.insert("UNHARNESSED_POWERSHELL".to_string(), powershell);
+    }
     Arc::new(KernelProvisioner::new(
         cwd,
         IpythonKernelProvisionerOptions {
             python: None,
             env,
             command_prefix: None,
-            shell_path: None,
+            shell_path: shells.git_bash.map(std::path::PathBuf::from),
             session_id: Some(session_id),
             host_handlers: handlers,
             python_skills,

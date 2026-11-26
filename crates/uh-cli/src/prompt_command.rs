@@ -117,6 +117,7 @@ fn assemble_breakdown(
             // are kernel-resident programmatic tools.
             selected_tools: Some(vec!["ipython"]),
             generic_mcp_servers: generic_servers,
+            shells: Some(uh_core::platform::KernelShells::resolve()),
             ..Default::default()
         },
     )
