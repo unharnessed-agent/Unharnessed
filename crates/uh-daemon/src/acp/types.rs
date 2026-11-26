@@ -174,6 +174,9 @@ pub enum AcpSessionUpdate {
         status: AcpToolStatus,
         #[serde(rename = "rawInput")]
         raw_input: Value,
+        /// `{"is_mcp_tool_call": true}` on an MCP call the cell made.
+        #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+        meta: Option<Value>,
     },
     /// A tool call progressed or finished.
     #[serde(rename = "tool_call_update")]
@@ -186,6 +189,9 @@ pub enum AcpSessionUpdate {
         content: Option<Vec<ToolCallContent>>,
         #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
         meta: Option<Value>,
+        /// The result of an MCP call the cell made.
+        #[serde(rename = "rawOutput", skip_serializing_if = "Option::is_none")]
+        raw_output: Option<Value>,
     },
     /// Namespaced unharnessed state (compaction, quiescence, ...).
     #[serde(rename = "session_info_update")]
@@ -553,6 +559,7 @@ mod tests {
             kind: AcpToolKind::Execute,
             status: AcpToolStatus::InProgress,
             raw_input: json!({ "code": "1+1" }),
+            meta: None,
         };
         let value = call.to_bare_value();
         assert_eq!(value["sessionUpdate"], "tool_call");
@@ -563,6 +570,7 @@ mod tests {
             status: Some(AcpToolStatus::Completed),
             content: Some(vec![ToolCallContent::new("42")]),
             meta: None,
+            raw_output: None,
         };
         let value = update.to_bare_value();
         assert_eq!(value["sessionUpdate"], "tool_call_update");

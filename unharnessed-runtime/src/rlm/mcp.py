@@ -64,6 +64,10 @@ _MAX_TOOL_PAGES = 25
 _DEFAULT_TOOL_SEARCH_LIMIT = 20
 _MAX_TOOL_SEARCH_LIMIT = 50
 _MAX_TOOL_SEARCH_SERVERS = 8
+# Each call_tool reports itself to the host under this MIME (MCP_CALL_DISPLAY_MIME
+# in uh-core). Arguments and result each fit the cell output cap or become a notice.
+_MCP_CALL_DISPLAY_MIME = "application/vnd.unharnessed.mcp-call+json"
+_MCP_CALL_DISPLAY_CHARS = 65_536
 # Defensive only: the host must already whitelist safe metadata in inventory
 # entries. Never applied to live tool schemas or results — argument names there
 # are server-defined and legitimately credential-like.
@@ -617,7 +621,43 @@ async def call_tool(server: str, tool: str, arguments: dict[str, Any] | None = N
     _validate_name(tool, "tool")
     if arguments is not None and not isinstance(arguments, dict):
         raise TypeError("arguments must be a dict or None")
-    return await _dispatch(lambda: _registry.call(server, tool, arguments or {}))
+    try:
+        result = await _dispatch(lambda: _registry.call(server, tool, arguments or {}))
+    except Exception as exc:
+        _report_call(server, tool, arguments, f"{type(exc).__name__}: {exc}", is_error=True)
+        raise
+    _report_call(server, tool, arguments, result, is_error=False)
+    return result
+
+
+def _report_call(
+    server: str, tool: str, arguments: dict[str, Any] | None, result: Any, *, is_error: bool
+) -> None:
+    """Tell the host about one tool call, so it can show the call on its own (ACP)."""
+    from . import repl
+
+    repl.emit(
+        {
+            _MCP_CALL_DISPLAY_MIME: {
+                "server": server,
+                "tool": tool,
+                "arguments": _display_value(arguments or {}),
+                "result": _display_value(result),
+                "isError": is_error,
+            }
+        }
+    )
+
+
+def _display_value(value: Any) -> Any:
+    """`value` as plain JSON, or a size notice when it passes the display cap."""
+    try:
+        text = json.dumps(value, allow_nan=False, default=str)
+    except ValueError:
+        return "[value is not JSON]"
+    if len(text) > _MCP_CALL_DISPLAY_CHARS:
+        return f"[{len(text)} characters omitted]"
+    return json.loads(text)
 
 
 async def reload(server: str | None = None) -> None:

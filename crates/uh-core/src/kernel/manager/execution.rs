@@ -224,6 +224,8 @@ impl Inner {
                 diffs: (!buffers.diffs.is_empty()).then(|| std::mem::take(&mut buffers.diffs)),
                 attachments: (!buffers.attachments.is_empty())
                     .then(|| std::mem::take(&mut buffers.attachments)),
+                mcp_calls: (!buffers.mcp_calls.is_empty())
+                    .then(|| std::mem::take(&mut buffers.mcp_calls)),
                 background_output: (!background_output.is_empty()).then_some(background_output),
                 status,
                 error: buffers.error.take(),

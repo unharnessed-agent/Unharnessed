@@ -30,7 +30,8 @@ use crate::kernel::shared::{
     KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE, KERNEL_BUSY_INTERRUPT_INTERVAL_MS,
     KERNEL_BUSY_REUSE_WAIT_MS, KERNEL_SHUTDOWN_TIMEOUT_MS, KERNEL_STDERR_LOG_BUDGET_MARKER,
     MAX_ATTACHMENT_DATA_CHARS, MAX_BACKGROUND_OUTPUT_CHARS, MAX_KERNEL_STDERR_CHARS,
-    MAX_KERNEL_STDERR_LOG_BYTES, RESTORE_EXECUTION_TIMEOUT_MS, SNAPSHOT_EXECUTION_TIMEOUT_MS,
+    MAX_KERNEL_STDERR_LOG_BYTES, MCP_CALL_DISPLAY_MIME, RESTORE_EXECUTION_TIMEOUT_MS,
+    SNAPSHOT_EXECUTION_TIMEOUT_MS,
 };
 use crate::kernel::state_snapshot::{
     RestoreResult, SnapshotResult, SnapshotSkip, DEFAULT_SNAPSHOT_MAX_BYTES,
@@ -91,6 +92,7 @@ struct ExecBuffers {
     result: Option<String>,
     diffs: Vec<KernelDiffDisplay>,
     attachments: Vec<KernelAttachment>,
+    mcp_calls: Vec<Value>,
     attachment_oversized: bool,
     background_output: String,
     background_output_chars: usize,
@@ -132,6 +134,7 @@ impl InternalExecuteResult {
                 result: None,
                 diffs: None,
                 attachments: None,
+                mcp_calls: None,
                 background_output: None,
                 status: ExecuteStatus::Aborted,
                 error: None,

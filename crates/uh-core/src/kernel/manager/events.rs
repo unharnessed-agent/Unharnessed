@@ -5,7 +5,7 @@ use super::{
     append_truncated, lock, parse_attachment_display, parse_diff_display, Arc, Event, ExecBuffers,
     ExecuteStatus, Guarded, Inner, KernelChange, KernelError, StreamName, Value,
     ATTACHMENT_DISPLAY_MIME, BASH_ACTIVITY_DISPLAY_MIME, DIFF_DISPLAY_MIME,
-    MAX_ATTACHMENT_DATA_CHARS, MAX_BACKGROUND_OUTPUT_CHARS,
+    MAX_ATTACHMENT_DATA_CHARS, MAX_BACKGROUND_OUTPUT_CHARS, MCP_CALL_DISPLAY_MIME,
 };
 use std::fmt::Write as _;
 
@@ -181,7 +181,7 @@ impl Inner {
         }
     }
 
-    /// display events: diffs and attachments of the live cell.
+    /// display events: diffs, attachments and MCP calls of the live cell.
     fn dispatch_display(&self, id: Option<&str>, data: &Value) {
         let execution = lock(&self.guarded).active_execution.clone();
         let Some(execution) = execution.filter(|e| Some(e.request_id.as_str()) == id) else {
@@ -192,6 +192,12 @@ impl Inner {
             if let Some(diff) = parse_diff_display(payload) {
                 buffers.diffs.push(diff);
             }
+        }
+        if let Some(call) = data
+            .get(MCP_CALL_DISPLAY_MIME)
+            .filter(|call| call.is_object())
+        {
+            buffers.mcp_calls.push(call.clone());
         }
         match data
             .get(ATTACHMENT_DISPLAY_MIME)
