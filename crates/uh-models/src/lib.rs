@@ -14,7 +14,9 @@
 //!
 //! [`additions`] has no TS source: it reads this repository's
 //! `catalog/models.additions.v1.json`, the models released since the
-//! catalog repo's last update.
+//! catalog repo's last update. `provider_models` has no TS source either:
+//! it reads the `/models` endpoint of each provider the user holds an API
+//! key for, and adds the models the catalog does not list yet.
 //!
 //! The two fetched files are the client-facing catalog contract
 //! (`models/catalog.v1.json` + `plugins/catalog.v2.json` of the catalog
@@ -38,8 +40,10 @@ pub mod schema;
 pub mod transports;
 
 mod chain;
+mod provider_models;
 
 pub use chain::{ModelCatalog, PrimeCredentials, RefreshTrigger};
+pub use provider_models::ProviderKey;
 pub use uh_types::ai::Model;
 
 /// Refresh cadence: every [`CATALOG_REFRESH_INTERVAL_MS`] milliseconds

@@ -19,6 +19,10 @@
 //! The live `OpenRouter` list (`crate::openrouter`), when one was fetched,
 //! overlays the `OpenRouter` entries of whichever layer served.
 //!
+//! The live provider lists (`crate::provider_models`), for the providers
+//! the caller holds an API key for, append the models those providers list
+//! and the layers above do not know.
+//!
 //! Refresh cadence: hourly, at startup, on picker open, and on auth change;
 //! fire-and-forget — errors are caught and last-good retained, never
 //! surfaced into a session. A mid-session refresh never retargets the
@@ -42,6 +46,7 @@ use crate::prime_inference::{
     merge_prime_inference_models, PrimeInferenceCatalog, PrimeInferenceCredentials,
     PRIME_INFERENCE_BASE_URL,
 };
+use crate::provider_models::{ProviderKey, ProviderModelLists};
 use crate::transports;
 use crate::Model;
 
@@ -96,6 +101,9 @@ pub struct ModelCatalog {
     /// The model additions; `None` leaves the catalog as fetched (the
     /// hermetic [`ModelCatalog::with_urls`] seam never fetches them).
     additions: Option<ModelAdditions>,
+    /// The live provider lists; `None` leaves the catalog as fetched (the
+    /// hermetic [`ModelCatalog::with_urls`] seam never lists providers).
+    provider_lists: Option<ProviderModelLists>,
     bundled: BundledAssets,
     templates: PinnedTemplates,
     compiled: Arc<Vec<Model>>,
@@ -131,6 +139,7 @@ impl ModelCatalog {
         )
         .with_openrouter_url(OPENROUTER_BASE_URL)
         .with_additions_url(MODEL_ADDITIONS_URL)
+        .with_provider_lists()
     }
 
     /// [`ModelCatalog::new`] with an explicit bundled-asset directory
@@ -145,6 +154,7 @@ impl ModelCatalog {
         )
         .with_openrouter_url(OPENROUTER_BASE_URL)
         .with_additions_url(MODEL_ADDITIONS_URL)
+        .with_provider_lists()
     }
 
     /// [`ModelCatalog::new`] with both remote URLs overridden (hermetic
@@ -176,6 +186,7 @@ impl ModelCatalog {
             prime_inference: PrimeInferenceCatalog::with_base_url(models_dir.clone(), pi_base_url),
             openrouter: None,
             additions: None,
+            provider_lists: None,
             models_dir,
             bundled: bundled_dir
                 .map_or_else(BundledAssets::at_package_root, BundledAssets::from_dir),
@@ -209,6 +220,26 @@ impl ModelCatalog {
             self.templates.clone(),
         ));
         self
+    }
+
+    /// Turn on the live provider lists, read from each provider's own
+    /// `/models` endpoint and cached beside the models dir.
+    #[must_use]
+    pub fn with_provider_lists(mut self) -> Self {
+        self.provider_lists = Some(ProviderModelLists::new(
+            self.models_dir.as_deref(),
+            &self.compiled,
+        ));
+        self
+    }
+
+    /// The providers whose live model list this catalog reads, given an API
+    /// key: callers resolve keys for these providers only.
+    pub fn listed_providers(&self) -> Vec<String> {
+        self.provider_lists
+            .as_ref()
+            .map(|lists| lists.providers().map(String::from).collect())
+            .unwrap_or_default()
     }
 
     /// The Prime Inference API base URL: the same endpoint the public
@@ -248,6 +279,16 @@ impl ModelCatalog {
     /// the live Prime Inference snapshot for `credentials` when given.
     /// Never fails; never blocks on the network.
     pub fn resolve(&self, credentials: Option<&PrimeCredentials>) -> Vec<Model> {
+        self.resolve_with_keys(credentials, &[])
+    }
+
+    /// [`ModelCatalog::resolve`] plus the last-good live list of each
+    /// provider in `keys`. Never fails; never blocks on the network.
+    pub fn resolve_with_keys(
+        &self,
+        credentials: Option<&PrimeCredentials>,
+        keys: &[ProviderKey],
+    ) -> Vec<Model> {
         let base = match self.provider_cache.get(PUBLIC_SCOPE) {
             Some(remote) => {
                 // Step 1: validated last-good cache + the compiled offline
@@ -274,6 +315,10 @@ impl ModelCatalog {
             Some(additions) => merge_model_additions(base, &additions),
             None => base,
         };
+        let base = match &self.provider_lists {
+            Some(lists) => lists.merge(base, keys),
+            None => base,
+        };
         let live = credentials
             .and_then(|credentials| self.prime_inference.get(&credentials.as_inference()));
         let models = match live {
@@ -296,6 +341,15 @@ impl ModelCatalog {
                 refreshed = refreshed.map(|models| models.len()),
                 "openrouter list refresh settled"
             );
+        }
+    }
+
+    /// Awaited refresh of the live list of each provider in `keys` (`force`
+    /// for the forced triggers). Only the providers the user holds a key for
+    /// are contacted, with that key.
+    pub async fn refresh_provider_models(&self, keys: &[ProviderKey], force: bool) {
+        if let Some(lists) = &self.provider_lists {
+            lists.refresh(keys, force).await;
         }
     }
 

@@ -11,8 +11,8 @@ pub use registry::{
 };
 
 pub use catalog_chain::{
-    catalog_for, install_catalog, openrouter_signed_in, prime_credentials_for_dir,
-    spawn_hourly_refresh, startup_refresh,
+    catalog_for, install_catalog, openrouter_signed_in, prime_credentials_for_dir, provider_keys,
+    provider_keys_for_dir, spawn_hourly_refresh, startup_refresh,
 };
 /// The refresh triggers (`uh-models`' own enum — the daemon's picker-open
 /// and auth-change wiring selects it; uh-daemon's runtime surface goes

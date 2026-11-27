@@ -82,6 +82,41 @@ pub fn prime_credentials_for_dir(agent_dir: &Path) -> Option<PrimeCredentials> {
     Some(PrimeCredentials { api_key, team_id })
 }
 
+/// The API keys of the providers whose live model list `catalog` reads:
+/// stored API keys and environment keys. OAuth sign-ins are left out, as
+/// are Anthropic OAuth tokens passed as keys: a subscription token does
+/// not open a provider's public `/models`.
+pub fn provider_keys(
+    auth: &mut AuthStorage,
+    catalog: &ModelCatalog,
+) -> Vec<uh_models::ProviderKey> {
+    catalog
+        .listed_providers()
+        .into_iter()
+        .filter_map(|provider| {
+            if !auth.has_auth(&provider) {
+                return None;
+            }
+            let result = auth.get_api_key_with_source_token(&provider, false);
+            if matches!(result.credential_type, Some("oauth" | "mcp_static_token")) {
+                return None;
+            }
+            let api_key = result
+                .api_key
+                .filter(|key| !key.is_empty() && !key.contains("sk-ant-oat"))?;
+            Some(uh_models::ProviderKey { provider, api_key })
+        })
+        .collect()
+}
+
+/// [`provider_keys`] from the auth stored under `agent_dir` (or the
+/// environment), for the daemon's catalog refresh.
+#[must_use]
+pub fn provider_keys_for_dir(agent_dir: &Path) -> Vec<uh_models::ProviderKey> {
+    let catalog = catalog_for(Some(&agent_dir.join("models.json")));
+    provider_keys(&mut AuthStorage::create(agent_dir), &catalog)
+}
+
 /// Whether the auth stored under `agent_dir` (or the environment) signs in
 /// to `OpenRouter`: only then does the catalog fetch `OpenRouter`'s live list.
 #[must_use]

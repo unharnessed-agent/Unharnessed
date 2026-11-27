@@ -357,12 +357,13 @@ async fn watch_models(
                 true
             }
         };
-        let (credentials, openrouter) = tokio::task::spawn_blocking({
+        let (credentials, openrouter, provider_keys) = tokio::task::spawn_blocking({
             let agent_dir = Arc::clone(&mode.agent_dir);
             move || {
                 (
                     uh_core::models::prime_credentials_for_dir(&agent_dir),
                     uh_core::models::openrouter_signed_in(&agent_dir),
+                    uh_core::models::provider_keys_for_dir(&agent_dir),
                 )
             }
         })
@@ -374,6 +375,9 @@ async fn watch_models(
         if openrouter {
             catalog.refresh_openrouter(forced).await;
         }
+        catalog
+            .refresh_provider_models(&provider_keys, forced)
+            .await;
         in_process_config::refresh_after_auth_change(&state, &mode).await;
     }
 }
