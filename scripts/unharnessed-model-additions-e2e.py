@@ -6,14 +6,17 @@ ACP `session/new`) reading the file the script wrote.
 usage: scripts/unharnessed-model-additions-e2e.py <out-dir> [--live]
 
 The sync scenarios run scripts/sync-model-additions.py on a small catalog,
-a small models.dev payload and a small Codex model list written under
-<out-dir>/sync, and cover how it can go wrong: a model no session can use
-admitted (no tool calls, image output, deprecated, no price, a live-API
-id, a model Codex hides from subscribers), a model the catalog's
-maintainers left out admitted, a subscription model given the API's
-context window, an added model disappearing while the catalog still lacks
-it, a model staying after the catalog lists it or its source drops it, a
-rewrite without a change, and an unreadable source emptying the file.
+a small models.dev payload, a small Codex model list and small OpenCode
+model lists written under <out-dir>/sync, and cover how it can go wrong: a
+model no session can use admitted (no tool calls, image output, deprecated,
+no price, a live-API id, a model Codex hides from subscribers), a model the
+catalog's maintainers left out admitted, a subscription model given the
+API's context window, an unmapped Copilot family admitted, an unsupported
+OpenCode protocol admitted without an explicit supported fallback, a model
+on a transport the client does not compile admitted, an added model
+disappearing while the catalog still lacks it, a model staying after the
+catalog lists it or its source drops it, a rewrite without a change, and an
+unreadable source emptying the file.
 
 The picker scenarios seed an agent dir's caches and start the binary with
 UNHARNESSED_OFFLINE set, so nothing reaches the network: the additions the
@@ -61,7 +64,8 @@ ENV.update(UNHARNESSED_KERNEL_VENV=str(OUT / "kernel-venv"), DO_NOT_TRACK="1")
 CATALOG = json.loads((ROOT / "crates/uh-models/tests/fixtures/catalog.v1.json").read_text())
 CATALOG_URL = "https://raw.githubusercontent.com/PrimeIntellect-ai/prime-agent-catalog/main/models/catalog.v1.json"
 ADDITIONS_URL = "https://raw.githubusercontent.com/unharnessed-agent/Unharnessed/main/catalog/models.additions.v1.json"
-KEYS = {provider: {"type": "api_key", "key": "sk-e2e-test"} for provider in ("anthropic", "google", "openai")}
+KEYS = {provider: {"type": "api_key", "key": "sk-e2e-test"} for provider in (
+    "anthropic", "google", "openai", "github-copilot", "opencode", "opencode-go")}
 # A ChatGPT subscription: a token that is not due for a refresh.
 KEYS["openai-codex"] = {"type": "oauth", "access": "e2e-access", "refresh": "e2e-refresh",
                         "accountId": "e2e-account", "expires": int((time.time() + 30 * 86400) * 1000)}
@@ -70,7 +74,38 @@ TRANSPORTS = {
     "google": ("google-generative-ai", "https://generativelanguage.googleapis.com/v1beta"),
     "openai": ("openai-responses", "https://api.openai.com/v1"),
     "openai-codex": ("openai-codex-responses", "https://chatgpt.com/backend-api"),
+    "github-copilot": ("openai-responses", "https://api.individual.githubcopilot.com"),
+    "opencode": ("openai-responses", "https://opencode.ai/zen/v1"),
+    "opencode-go": ("openai-completions", "https://opencode.ai/zen/go/v1"),
 }
+COMPILED_ROWS = (
+    ("anthropic", "anthropic-messages", "https://api.anthropic.com"),
+    ("google", "google-generative-ai", "https://generativelanguage.googleapis.com/v1beta"),
+    ("openai", "openai-responses", "https://api.openai.com/v1"),
+    ("openai-codex", "openai-codex-responses", "https://chatgpt.com/backend-api"),
+    ("github-copilot", "anthropic-messages", "https://api.individual.githubcopilot.com"),
+    ("github-copilot", "openai-completions", "https://api.individual.githubcopilot.com"),
+    ("github-copilot", "openai-responses", "https://api.individual.githubcopilot.com"),
+    ("opencode", "anthropic-messages", "https://opencode.ai/zen"),
+    ("opencode", "google-generative-ai", "https://opencode.ai/zen/v1"),
+    ("opencode", "openai-completions", "https://opencode.ai/zen/v1"),
+    ("opencode", "openai-responses", "https://opencode.ai/zen/v1"),
+    ("opencode-go", "anthropic-messages", "https://opencode.ai/zen/go"),
+    ("opencode-go", "openai-completions", "https://opencode.ai/zen/go/v1"),
+    ("opencode-go", "openai-responses", "https://opencode.ai/zen/go/v1"),
+)
+
+
+def compiled_models(omit=()):
+    """A small compiled Rust table covering every scripted transport."""
+    return "static RAW_MODELS: &[RawModel] = &[\n" + "".join(
+        f'    RawModel {{\n        provider: "{provider}",\n        api: "{api}",\n'
+        f'        base_url: "{base_url}",\n    }},\n'
+        for provider, api, base_url in COMPILED_ROWS if (provider, api, base_url) not in omit
+    ) + "];\n"
+
+
+COMPILED_MODELS = compiled_models()
 FAILED = []
 
 
@@ -113,13 +148,29 @@ def shown(context_window, **changes):
     return model
 
 
+def served(model_id, recommended_api, **changes):
+    """One current OpenCode endpoint chat model."""
+    model = {
+        "id": model_id, "name": model_id, "type": "chat", "recommended_api": recommended_api,
+        "api": {recommended_api: {"base_url": "https://opencode.example/inference"}},
+        "capabilities": {"tools": {"supported": True}, "reasoning": {"supported": True, "effort": ["low", "high"]}},
+        "modalities": {"input": ["text", "image/png"], "output": ["text"]},
+        "cost": {"text": {"input": {"price": 1, "cache": {"read": 0.1, "write": {"30m": 2, "12h": 4}}},
+                          "output": {"price": 3}}},
+        "limit": {"context": 100000, "output": 9000},
+    }
+    model.update(changes)
+    return model
+
+
 def sources():
     """A catalog, and the models.dev payload and Codex list that go with
     it. The catalog lists, per API provider, models released up to
     2026-03-01."""
     catalog = {"schemaVersion": 1, "models": [
         listed("anthropic", "claude-old"), listed("anthropic", "claude-mid"),
-        listed("google", "gemini-a"), listed("openai", "gpt-a"), listed("openai-codex", "gpt-a")]}
+        listed("google", "gemini-a"), listed("openai", "gpt-a"), listed("openai-codex", "gpt-a"),
+        listed("github-copilot", "copilot-old"), listed("opencode", "zen-old"), listed("opencode-go", "go-old")]}
     max_effort = [{"type": "effort", "values": ["low", "medium", "high", "xhigh", "max"]}]
     models_dev = {
         "anthropic": {"models": {
@@ -146,6 +197,17 @@ def sources():
             "gpt-new": described("2026-05-01", name="GPT New", modalities={"input": ["text"], "output": ["text"]}),
             "gpt-image-x": described("2026-05-01", modalities={"input": ["text"], "output": ["image"]}),
         }},
+        "github-copilot": {"models": {
+            "copilot-old": described("2026-03-01"),
+            "copilot-claude-new": described("2026-05-01", family="claude-fable", canonical_model_id="anthropic/claude-fable-5-2"),
+            "copilot-gemini-new": described("2026-05-01", family="gemini", canonical_model_id="google/gemini-4-neon"),
+            "copilot-gpt-new": described("2026-05-01", family="gpt-sol", canonical_model_id="openai/gpt-6.2-sol"),
+            "copilot-mai-new": described("2026-05-01", family="mai-code", canonical_model_id="microsoft/mai-code-2"),
+            "copilot-unknown-new": described("2026-05-01"),
+            "copilot-vendor-only-new": described("2026-05-01", family="future-family", canonical_model_id="openai/future-family"),
+        }},
+        "opencode": {"models": {}},
+        "opencode-go": {"models": {}},
         "some-other-provider": {"models": {"other-new": described("2026-05-01")}},
     }
     # gpt-new has an API twin on models.dev (a 200000 context there),
@@ -158,7 +220,36 @@ def sources():
         dict(shown(272000, visibility="hide"), slug="gpt-hidden"),
         dict(shown(None), slug="gpt-no-context"),
     ]}
-    return catalog, models_dev, codex
+    opencode = {"data": [
+        served("zen-message", "messages"),
+        served("zen-sonnet-5-5", "messages", capabilities={
+            "tools": {"supported": True},
+            "reasoning": {"supported": True, "effort": ["low", "high"], "toggle": True},
+        }),
+        served("zen-google", "generate-content"),
+        served("zen-interactions", "interactions", api={
+            "interactions": {"base_url": "https://opencode.example/interactions"},
+            "generate-content": {"base_url": "https://opencode.example/google"},
+        }),
+        served("zen-response", "responses"),
+        served("zen-completion", "chat-completions", capabilities={
+            "tools": {"supported": True},
+            "reasoning": {"supported": True, "effort": ["low", "high"], "toggle": True},
+        }),
+        served("zen-no-controls", "messages", capabilities={
+            "tools": {"supported": True},
+            "reasoning": {"supported": True},
+        }),
+        served("zen-no-tools", "responses", capabilities={"tools": {"supported": False}}),
+        served("zen-retired-candidate", "embeddings"),
+    ]}
+    opencode_go = {"data": [
+        served("go-message", "messages"),
+        served("go-google", "generate-content"),
+        served("go-response", "responses"),
+        served("go-completion", "chat-completions"),
+    ]}
+    return catalog, models_dev, codex, opencode, opencode_go
 
 
 class Sync:
@@ -171,14 +262,20 @@ class Sync:
         self.file.unlink(missing_ok=True)
         self.log = open(OUT / f"sync-{name}.out", "w")
 
-    def run(self, catalog, models_dev, codex):
+    def run(self, catalog, models_dev, codex, opencode, opencode_go, compiled_models=COMPILED_MODELS):
         """Run the script on these sources (a str is written as is)."""
-        files = {"--catalog": catalog, "--models-dev": models_dev, "--codex-models": codex}
+        files = {"--catalog": catalog, "--models-dev": models_dev, "--codex-models": codex,
+                 "--opencode-models": opencode, "--opencode-go-models": opencode_go}
         command = [sys.executable, str(SYNC), "--out", str(self.file)]
         for flag, source in files.items():
             path = self.dir / f"{flag[2:]}.json"
             path.write_text(source if isinstance(source, str) else json.dumps(source, indent=1))
             command += [flag, str(path)]
+        compiled = self.dir / "compiled-models.rs"
+        compiled.unlink(missing_ok=True)
+        if compiled_models is not None:
+            compiled.write_text(compiled_models)
+        command += ["--compiled-models", str(compiled)]
         done = subprocess.run(command, capture_output=True, text=True, env=ENV)
         self.log.write(f"$ {' '.join(command)}\n{done.stdout}{done.stderr}exit {done.returncode}\n\n")
         self.log.flush()
@@ -192,14 +289,20 @@ class Sync:
         return next((m for m in models if (m["provider"], m["id"]) == (provider, model_id)), None)
 
 
-ADMITTED = ["anthropic/claude-fable-5-9", "anthropic/claude-new", "google/gemini-new", "openai/gpt-new",
-            "openai-codex/gpt-new", "openai-codex/gpt-subscription-only"]
+ADMITTED = ["anthropic/claude-fable-5-9", "anthropic/claude-new",
+            "github-copilot/copilot-claude-new", "github-copilot/copilot-gemini-new",
+            "github-copilot/copilot-gpt-new", "github-copilot/copilot-mai-new",
+            "google/gemini-new", "openai/gpt-new",
+            "openai-codex/gpt-new", "openai-codex/gpt-subscription-only",
+            "opencode/zen-completion", "opencode/zen-google", "opencode/zen-interactions", "opencode/zen-message",
+            "opencode/zen-no-controls", "opencode/zen-response", "opencode/zen-sonnet-5-5",
+            "opencode-go/go-completion", "opencode-go/go-message", "opencode-go/go-response"]
 
 
 def scenario_sync_admission():
-    catalog, models_dev, codex = sources()
+    catalog, models_dev, codex, opencode, opencode_go = sources()
     sync = Sync("admission")
-    done = sync.run(catalog, models_dev, codex)
+    done = sync.run(catalog, models_dev, codex, opencode, opencode_go)
     check("admission: the script exits 0", done.returncode == 0, done.stderr)
     check("admission: only the usable API models released after the catalog's newest, "
           "and the subscription models Codex shows, are added",
@@ -242,30 +345,80 @@ def scenario_sync_admission():
           == ("GPT Subscription Only", {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}, 96000, 128000,
               ["text"], False), alone)
 
+    copilot = {m["id"]: m for m in json.loads(sync.file.read_text())["models"] if m["provider"] == "github-copilot"}
+    check("admission: Copilot families select the audited wire API",
+          copilot["copilot-claude-new"]["api"] == "anthropic-messages"
+          and copilot["copilot-gemini-new"]["api"] == "openai-completions"
+          and copilot["copilot-gpt-new"]["api"] == "openai-responses"
+          and copilot["copilot-mai-new"]["api"] == "openai-responses", copilot)
+    check("admission: an unmapped Copilot family fails closed",
+          sync.entry("github-copilot", "copilot-unknown-new") is None)
+    check("admission: a Copilot vendor wildcard does not map an unknown family",
+          sync.entry("github-copilot", "copilot-vendor-only-new") is None)
+    zen_google = sync.entry("opencode", "zen-google") or {}
+    check("admission: an OpenCode Google model pins on the compiled Zen transport",
+          (zen_google.get("api"), zen_google.get("baseUrl")) == ("google-generative-ai", "https://opencode.ai/zen/v1"),
+          zen_google)
+    zen_interactions = sync.entry("opencode", "zen-interactions") or {}
+    check("admission: a newer endpoint protocol falls back only to an explicitly offered supported API",
+          (zen_interactions.get("api"), zen_interactions.get("baseUrl")) == ("google-generative-ai", "https://opencode.ai/zen/v1"),
+          zen_interactions)
+    zen_completion = sync.entry("opencode", "zen-completion") or {}
+    check("admission: endpoint costs flatten with the lowest cache-write price",
+          zen_completion.get("cost") == {"input": 1, "output": 3, "cacheRead": 0.1, "cacheWrite": 2},
+          zen_completion.get("cost"))
+    check("admission: an endpoint reasoning toggle offers off as none",
+          zen_completion.get("thinkingLevelMap") == {"off": "none", "minimal": None, "low": "low", "medium": None,
+                                                     "high": "high", "xhigh": None, "max": None},
+          zen_completion.get("thinkingLevelMap"))
+    zen_sonnet = sync.entry("opencode", "zen-sonnet-5-5") or {}
+    check("admission: endpoint effort levels beat model-family heuristics",
+          zen_sonnet.get("thinkingLevelMap") == {"off": "none", "minimal": None, "low": "low", "medium": None,
+                                                 "high": "high", "xhigh": None, "max": None},
+          zen_sonnet.get("thinkingLevelMap"))
+    zen_no_controls = sync.entry("opencode", "zen-no-controls") or {}
+    check("admission: endpoint reasoning without controls offers no level",
+          zen_no_controls.get("thinkingLevelMap") == {"off": None, "minimal": None, "low": None, "medium": None,
+                                                      "high": None, "xhigh": None, "max": None},
+          zen_no_controls.get("thinkingLevelMap"))
+    check("admission: a model without tool calls is not added", sync.entry("opencode", "zen-no-tools") is None)
+    check("admission: an unsupported endpoint API is not added", sync.entry("opencode", "zen-retired-candidate") is None)
+    check("admission: a transport without a compiled tuple fails closed",
+          sync.entry("opencode-go", "go-google") is None)
+
+    omitted = ("opencode-go", "openai-responses", "https://opencode.ai/zen/go/v1")
+    pinning = Sync("compiled-pinning")
+    done = pinning.run(catalog, models_dev, codex, opencode, opencode_go,
+                       compiled_models=compiled_models(omit={omitted}))
+    check("admission: a statically known tuple missing from the compiled table fails closed",
+          done.returncode == 0 and pinning.entry("opencode-go", "go-response") is None
+          and pinning.entry("opencode-go", "go-message") is not None,
+          done.stderr or pinning.ids())
+
     before = sync.file.read_bytes()
-    done = sync.run(catalog, models_dev, codex)
+    done = sync.run(catalog, models_dev, codex, opencode, opencode_go)
     check("admission: a second run leaves the file as it is",
           sync.file.read_bytes() == before and "unchanged" in done.stdout, done.stdout)
 
 
 def scenario_sync_lifecycle():
-    catalog, models_dev, codex = sources()
+    catalog, models_dev, codex, opencode, opencode_go = sources()
     sync = Sync("lifecycle")
-    sync.run(catalog, models_dev, codex)
+    sync.run(catalog, models_dev, codex, opencode, opencode_go)
 
     # The catalog gains a model newer than claude-new, without listing it.
     catalog["models"].append(listed("anthropic", "claude-newer"))
     models_dev["anthropic"]["models"]["claude-newer"] = described("2026-06-01")
-    done = sync.run(catalog, models_dev, codex)
+    done = sync.run(catalog, models_dev, codex, opencode, opencode_go)
     check("lifecycle: an added model stays when the catalog lists a newer one",
           sync.ids() == ADMITTED and "kept    anthropic/claude-new" in done.stdout, sync.ids())
     fresh = Sync("lifecycle-fresh")
-    fresh.run(catalog, models_dev, codex)
+    fresh.run(catalog, models_dev, codex, opencode, opencode_go)
     check("lifecycle: the same sources without that history do not add it",
           fresh.ids() == [i for i in ADMITTED if not i.startswith("anthropic/")], fresh.ids())
 
     catalog["models"] += [listed("anthropic", "claude-new"), listed("openai-codex", "gpt-new")]
-    done = sync.run(catalog, models_dev, codex)
+    done = sync.run(catalog, models_dev, codex, opencode, opencode_go)
     left = [i for i in ADMITTED if i not in ("anthropic/claude-new", "openai-codex/gpt-new")]
     check("lifecycle: a model the catalog now lists leaves the file",
           sync.ids() == left
@@ -275,28 +428,35 @@ def scenario_sync_lifecycle():
     models_dev["openai"]["models"]["gpt-new"]["status"] = "deprecated"
     del models_dev["google"]["models"]["gemini-new"]
     next(m for m in codex["models"] if m["slug"] == "gpt-subscription-only")["visibility"] = "hide"
-    done = sync.run(catalog, models_dev, codex)
+    done = sync.run(catalog, models_dev, codex, opencode, opencode_go)
+    remaining = [i for i in ADMITTED if i not in (
+        "anthropic/claude-new", "google/gemini-new", "openai/gpt-new",
+        "openai-codex/gpt-new", "openai-codex/gpt-subscription-only")]
     check("lifecycle: a model its source deprecates, drops or hides leaves the file",
-          sync.ids() == ["anthropic/claude-fable-5-9"]
+          sync.ids() == remaining
           and "removed openai/gpt-new: deprecated" in done.stdout
           and "removed google/gemini-new: its source no longer lists it" in done.stdout
           and "removed openai-codex/gpt-subscription-only: not shown to subscribers" in done.stdout, done.stdout)
 
-    catalog["models"].append(listed("anthropic", "claude-fable-5-9"))
-    done = sync.run(catalog, models_dev, codex)
+    for pair in sync.ids():
+        provider, model_id = pair.split("/", 1)
+        catalog["models"].append(listed(provider, model_id))
+    done = sync.run(catalog, models_dev, codex, opencode, opencode_go)
     check("lifecycle: with nothing left to add the file holds an empty list",
           done.returncode == 0 and json.loads(sync.file.read_text()) == {"schemaVersion": 1, "models": []},
           sync.file.read_text())
 
 
 def scenario_sync_failures():
-    catalog, models_dev, codex = sources()
+    catalog, models_dev, codex, opencode, opencode_go = sources()
     sync = Sync("failures")
-    sync.run(catalog, models_dev, codex)
+    sync.run(catalog, models_dev, codex, opencode, opencode_go)
     before = sync.file.read_bytes()
 
-    def refused(name, bad_catalog, bad_models_dev, bad_codex=codex):
-        done = sync.run(bad_catalog, bad_models_dev, bad_codex)
+    def refused(name, bad_catalog, bad_models_dev, bad_codex=codex, bad_opencode=opencode,
+                bad_opencode_go=opencode_go, compiled_models=COMPILED_MODELS):
+        done = sync.run(bad_catalog, bad_models_dev, bad_codex, bad_opencode, bad_opencode_go,
+                        compiled_models=compiled_models)
         check(f"failures: {name} exits 1 and leaves the file as it is",
               done.returncode == 1 and done.stderr.startswith("error: ") and sync.file.read_bytes() == before,
               f"exit {done.returncode}: {done.stderr.strip()}")
@@ -314,6 +474,16 @@ def scenario_sync_failures():
             dict(catalog, models=[m for m in catalog["models"] if m["provider"] != "openai-codex"]), models_dev)
     refused("a Codex list that is not JSON", catalog, models_dev, "404: Not Found")
     refused("a Codex list of another shape", catalog, models_dev, {"models": [{"name": "gpt-new"}]})
+    refused("an OpenCode list that is not JSON", catalog, models_dev, codex, "502 Bad Gateway")
+    refused("an OpenCode Go list without a supported chat model", catalog, models_dev, codex, opencode, {"data": []})
+    unusable = {"data": [served("go-no-tools", "messages", capabilities={
+        "tools": {"supported": False},
+        "reasoning": {"supported": True},
+    })]}
+    refused("an OpenCode Go list whose chat models are all unusable", catalog, models_dev, codex, opencode, unusable)
+    refused("a missing compiled model table", catalog, models_dev, compiled_models=None)
+    refused("a compiled model table without transport tuples", catalog, models_dev,
+            compiled_models="not a Rust model table")
 
 
 # ---- the picker of the real binary -----------------------------------------
