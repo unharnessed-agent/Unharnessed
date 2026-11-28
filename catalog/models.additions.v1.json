@@ -829,6 +829,7 @@
       "contextWindow": 1000000,
       "maxTokens": 128000,
       "thinkingLevelMap": {
+        "off": "none",
         "minimal": null,
         "low": "low",
         "medium": "medium",
@@ -886,6 +887,7 @@
       "contextWindow": 1000000,
       "maxTokens": 128000,
       "thinkingLevelMap": {
+        "off": null,
         "minimal": null,
         "low": "low",
         "medium": "medium",
@@ -914,7 +916,7 @@
       "contextWindow": 1000000,
       "maxTokens": 384000,
       "thinkingLevelMap": {
-        "off": null,
+        "off": "none",
         "minimal": null,
         "low": "low",
         "medium": null,
@@ -943,7 +945,7 @@
       "contextWindow": 200000,
       "maxTokens": 32000,
       "thinkingLevelMap": {
-        "off": null,
+        "off": "none",
         "minimal": null,
         "low": "low",
         "medium": null,
@@ -1315,7 +1317,16 @@
         "cacheWrite": 0
       },
       "contextWindow": 262144,
-      "maxTokens": 131072
+      "maxTokens": 131072,
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null,
+        "low": null,
+        "medium": null,
+        "high": null,
+        "xhigh": null,
+        "max": null
+      }
     },
     {
       "id": "kimi-k3.1-pro",
@@ -1364,7 +1375,16 @@
         "cacheWrite": 0
       },
       "contextWindow": 200000,
-      "maxTokens": 32000
+      "maxTokens": 32000,
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null,
+        "low": null,
+        "medium": null,
+        "high": null,
+        "xhigh": null,
+        "max": null
+      }
     },
     {
       "id": "mistral-large-4",
@@ -1502,6 +1522,7 @@
       "contextWindow": 1000000,
       "maxTokens": 131072,
       "thinkingLevelMap": {
+        "off": "none",
         "minimal": null,
         "low": "low",
         "medium": "medium",
@@ -1530,7 +1551,7 @@
       "contextWindow": 262144,
       "maxTokens": 131072,
       "thinkingLevelMap": {
-        "off": null,
+        "off": "none",
         "minimal": null,
         "low": "low",
         "medium": "medium",
@@ -1615,6 +1636,7 @@
       "contextWindow": 1000000,
       "maxTokens": 128000,
       "thinkingLevelMap": {
+        "off": "none",
         "minimal": null,
         "low": "low",
         "medium": "medium",
@@ -1699,7 +1721,16 @@
         "cacheWrite": 0
       },
       "contextWindow": 1000000,
-      "maxTokens": 65536
+      "maxTokens": 65536,
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null,
+        "low": null,
+        "medium": null,
+        "high": null,
+        "xhigh": null,
+        "max": null
+      }
     },
     {
       "id": "hy4",
@@ -1776,7 +1807,16 @@
         "cacheWrite": 0
       },
       "contextWindow": 262144,
-      "maxTokens": 131072
+      "maxTokens": 131072,
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null,
+        "low": null,
+        "medium": null,
+        "high": null,
+        "xhigh": null,
+        "max": null
+      }
     },
     {
       "id": "kimi-k3.1-pro",
@@ -1825,7 +1865,16 @@
         "cacheWrite": 0
       },
       "contextWindow": 1000000,
-      "maxTokens": 262144
+      "maxTokens": 262144,
+      "thinkingLevelMap": {
+        "off": "none",
+        "minimal": null,
+        "low": null,
+        "medium": null,
+        "high": null,
+        "xhigh": null,
+        "max": null
+      }
     },
     {
       "id": "mimo-v2.6-flash",
@@ -1845,7 +1894,16 @@
         "cacheWrite": 0
       },
       "contextWindow": 1048576,
-      "maxTokens": 131072
+      "maxTokens": 131072,
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null,
+        "low": null,
+        "medium": null,
+        "high": null,
+        "xhigh": null,
+        "max": null
+      }
     },
     {
       "id": "mimo-v2.6-pro",
@@ -1865,7 +1923,16 @@
         "cacheWrite": 0
       },
       "contextWindow": 1048576,
-      "maxTokens": 131072
+      "maxTokens": 131072,
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null,
+        "low": null,
+        "medium": null,
+        "high": null,
+        "xhigh": null,
+        "max": null
+      }
     },
     {
       "id": "minimax-m3.1-flash",
@@ -1916,6 +1983,7 @@
       "contextWindow": 1000000,
       "maxTokens": 262144,
       "thinkingLevelMap": {
+        "off": "none",
         "minimal": null,
         "low": "low",
         "medium": null,

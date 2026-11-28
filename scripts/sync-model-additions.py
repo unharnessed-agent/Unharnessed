@@ -331,14 +331,12 @@ def copilot_api(model: dict) -> str | None:
     OpenAI-compatible APIs.
     """
     family = model.get("family") if isinstance(model.get("family"), str) else ""
-    canonical = model.get("canonical_model_id") if isinstance(model.get("canonical_model_id"), str) else ""
-    vendor = canonical.split("/", 1)[0] if "/" in canonical else ""
     family = family.lower()
-    if vendor == "anthropic" or family.startswith("claude"):
+    if family.startswith("claude"):
         return "anthropic-messages"
     if family.startswith(("gemini", "kimi")):
         return "openai-completions"
-    if vendor in {"openai", "xai"} or family.startswith(("gpt", "grok", "mai-code")):
+    if family.startswith(("gpt", "grok", "mai-code")):
         return "openai-responses"
     return None
 
@@ -353,14 +351,18 @@ def copilot_entry(model_id: str, model: dict) -> tuple[dict | None, str | None]:
 
 
 def endpoint_thinking_levels(model: dict) -> dict | None:
-    """The OpenCode endpoint's reasoning efforts as a thinkingLevelMap."""
+    """The OpenCode endpoint's reasoning controls as a thinkingLevelMap.
+
+    The endpoint is authoritative: `toggle` adds a `none` variant, while
+    `supported` without any control means no level may be invented."""
     capabilities = model.get("capabilities") if isinstance(model.get("capabilities"), dict) else {}
     reasoning = capabilities.get("reasoning") if isinstance(capabilities.get("reasoning"), dict) else {}
-    efforts = reasoning.get("effort")
-    if not isinstance(efforts, list):
+    if reasoning.get("supported") is not True:
         return None
-    values = {value for value in efforts if isinstance(value, str)}
-    levels = {"off": "none" if "none" in values else "off" if "off" in values else None}
+    efforts = reasoning.get("effort")
+    values = {value for value in efforts if isinstance(value, str)} if isinstance(efforts, list) else set()
+    can_disable = reasoning.get("toggle") is True or "none" in values
+    levels = {"off": "none" if can_disable else "off" if "off" in values else None}
     for level in LEVELS:
         levels[level] = level if level in values else None
     return levels
@@ -434,7 +436,6 @@ def opencode_entry(provider: str, model: dict) -> tuple[dict | None, str | None]
     levels = endpoint_thinking_levels(model)
     if levels:
         entry["thinkingLevelMap"] = levels
-    apply_thinking_level_rules(entry)
     return entry, None
 
 
@@ -470,7 +471,7 @@ def opencode_candidates(payload, provider: str, compiled: set[tuple[str, str, st
         else:
             unusable = opencode_unusable(entry, model, compiled)
         candidates[model["id"]] = (entry, unusable, "currently served")
-    if not candidates:
+    if not any(unusable is None for _, unusable, _ in candidates.values()):
         raise SourceError(f"the {provider} model list holds no supported chat model")
     return candidates
 

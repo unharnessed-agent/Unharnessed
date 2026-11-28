@@ -78,6 +78,34 @@ TRANSPORTS = {
     "opencode": ("openai-responses", "https://opencode.ai/zen/v1"),
     "opencode-go": ("openai-completions", "https://opencode.ai/zen/go/v1"),
 }
+COMPILED_ROWS = (
+    ("anthropic", "anthropic-messages", "https://api.anthropic.com"),
+    ("google", "google-generative-ai", "https://generativelanguage.googleapis.com/v1beta"),
+    ("openai", "openai-responses", "https://api.openai.com/v1"),
+    ("openai-codex", "openai-codex-responses", "https://chatgpt.com/backend-api"),
+    ("github-copilot", "anthropic-messages", "https://api.individual.githubcopilot.com"),
+    ("github-copilot", "openai-completions", "https://api.individual.githubcopilot.com"),
+    ("github-copilot", "openai-responses", "https://api.individual.githubcopilot.com"),
+    ("opencode", "anthropic-messages", "https://opencode.ai/zen"),
+    ("opencode", "google-generative-ai", "https://opencode.ai/zen/v1"),
+    ("opencode", "openai-completions", "https://opencode.ai/zen/v1"),
+    ("opencode", "openai-responses", "https://opencode.ai/zen/v1"),
+    ("opencode-go", "anthropic-messages", "https://opencode.ai/zen/go"),
+    ("opencode-go", "openai-completions", "https://opencode.ai/zen/go/v1"),
+    ("opencode-go", "openai-responses", "https://opencode.ai/zen/go/v1"),
+)
+
+
+def compiled_models(omit=()):
+    """A small compiled Rust table covering every scripted transport."""
+    return "static RAW_MODELS: &[RawModel] = &[\n" + "".join(
+        f'    RawModel {{\n        provider: "{provider}",\n        api: "{api}",\n'
+        f'        base_url: "{base_url}",\n    }},\n'
+        for provider, api, base_url in COMPILED_ROWS if (provider, api, base_url) not in omit
+    ) + "];\n"
+
+
+COMPILED_MODELS = compiled_models()
 FAILED = []
 
 
@@ -176,6 +204,7 @@ def sources():
             "copilot-gpt-new": described("2026-05-01", family="gpt-sol", canonical_model_id="openai/gpt-6.2-sol"),
             "copilot-mai-new": described("2026-05-01", family="mai-code", canonical_model_id="microsoft/mai-code-2"),
             "copilot-unknown-new": described("2026-05-01"),
+            "copilot-vendor-only-new": described("2026-05-01", family="future-family", canonical_model_id="openai/future-family"),
         }},
         "opencode": {"models": {}},
         "opencode-go": {"models": {}},
@@ -193,13 +222,24 @@ def sources():
     ]}
     opencode = {"data": [
         served("zen-message", "messages"),
+        served("zen-sonnet-5-5", "messages", capabilities={
+            "tools": {"supported": True},
+            "reasoning": {"supported": True, "effort": ["low", "high"], "toggle": True},
+        }),
         served("zen-google", "generate-content"),
         served("zen-interactions", "interactions", api={
             "interactions": {"base_url": "https://opencode.example/interactions"},
             "generate-content": {"base_url": "https://opencode.example/google"},
         }),
         served("zen-response", "responses"),
-        served("zen-completion", "chat-completions"),
+        served("zen-completion", "chat-completions", capabilities={
+            "tools": {"supported": True},
+            "reasoning": {"supported": True, "effort": ["low", "high"], "toggle": True},
+        }),
+        served("zen-no-controls", "messages", capabilities={
+            "tools": {"supported": True},
+            "reasoning": {"supported": True},
+        }),
         served("zen-no-tools", "responses", capabilities={"tools": {"supported": False}}),
         served("zen-retired-candidate", "embeddings"),
     ]}
@@ -222,7 +262,7 @@ class Sync:
         self.file.unlink(missing_ok=True)
         self.log = open(OUT / f"sync-{name}.out", "w")
 
-    def run(self, catalog, models_dev, codex, opencode, opencode_go):
+    def run(self, catalog, models_dev, codex, opencode, opencode_go, compiled_models=COMPILED_MODELS):
         """Run the script on these sources (a str is written as is)."""
         files = {"--catalog": catalog, "--models-dev": models_dev, "--codex-models": codex,
                  "--opencode-models": opencode, "--opencode-go-models": opencode_go}
@@ -231,6 +271,11 @@ class Sync:
             path = self.dir / f"{flag[2:]}.json"
             path.write_text(source if isinstance(source, str) else json.dumps(source, indent=1))
             command += [flag, str(path)]
+        compiled = self.dir / "compiled-models.rs"
+        compiled.unlink(missing_ok=True)
+        if compiled_models is not None:
+            compiled.write_text(compiled_models)
+        command += ["--compiled-models", str(compiled)]
         done = subprocess.run(command, capture_output=True, text=True, env=ENV)
         self.log.write(f"$ {' '.join(command)}\n{done.stdout}{done.stderr}exit {done.returncode}\n\n")
         self.log.flush()
@@ -249,7 +294,8 @@ ADMITTED = ["anthropic/claude-fable-5-9", "anthropic/claude-new",
             "github-copilot/copilot-gpt-new", "github-copilot/copilot-mai-new",
             "google/gemini-new", "openai/gpt-new",
             "openai-codex/gpt-new", "openai-codex/gpt-subscription-only",
-            "opencode/zen-completion", "opencode/zen-google", "opencode/zen-interactions", "opencode/zen-message", "opencode/zen-response",
+            "opencode/zen-completion", "opencode/zen-google", "opencode/zen-interactions", "opencode/zen-message",
+            "opencode/zen-no-controls", "opencode/zen-response", "opencode/zen-sonnet-5-5",
             "opencode-go/go-completion", "opencode-go/go-message", "opencode-go/go-response"]
 
 
@@ -307,6 +353,8 @@ def scenario_sync_admission():
           and copilot["copilot-mai-new"]["api"] == "openai-responses", copilot)
     check("admission: an unmapped Copilot family fails closed",
           sync.entry("github-copilot", "copilot-unknown-new") is None)
+    check("admission: a Copilot vendor wildcard does not map an unknown family",
+          sync.entry("github-copilot", "copilot-vendor-only-new") is None)
     zen_google = sync.entry("opencode", "zen-google") or {}
     check("admission: an OpenCode Google model pins on the compiled Zen transport",
           (zen_google.get("api"), zen_google.get("baseUrl")) == ("google-generative-ai", "https://opencode.ai/zen/v1"),
@@ -319,10 +367,33 @@ def scenario_sync_admission():
     check("admission: endpoint costs flatten with the lowest cache-write price",
           zen_completion.get("cost") == {"input": 1, "output": 3, "cacheRead": 0.1, "cacheWrite": 2},
           zen_completion.get("cost"))
+    check("admission: an endpoint reasoning toggle offers off as none",
+          zen_completion.get("thinkingLevelMap") == {"off": "none", "minimal": None, "low": "low", "medium": None,
+                                                     "high": "high", "xhigh": None, "max": None},
+          zen_completion.get("thinkingLevelMap"))
+    zen_sonnet = sync.entry("opencode", "zen-sonnet-5-5") or {}
+    check("admission: endpoint effort levels beat model-family heuristics",
+          zen_sonnet.get("thinkingLevelMap") == {"off": "none", "minimal": None, "low": "low", "medium": None,
+                                                 "high": "high", "xhigh": None, "max": None},
+          zen_sonnet.get("thinkingLevelMap"))
+    zen_no_controls = sync.entry("opencode", "zen-no-controls") or {}
+    check("admission: endpoint reasoning without controls offers no level",
+          zen_no_controls.get("thinkingLevelMap") == {"off": None, "minimal": None, "low": None, "medium": None,
+                                                      "high": None, "xhigh": None, "max": None},
+          zen_no_controls.get("thinkingLevelMap"))
     check("admission: a model without tool calls is not added", sync.entry("opencode", "zen-no-tools") is None)
     check("admission: an unsupported endpoint API is not added", sync.entry("opencode", "zen-retired-candidate") is None)
     check("admission: a transport without a compiled tuple fails closed",
           sync.entry("opencode-go", "go-google") is None)
+
+    omitted = ("opencode-go", "openai-responses", "https://opencode.ai/zen/go/v1")
+    pinning = Sync("compiled-pinning")
+    done = pinning.run(catalog, models_dev, codex, opencode, opencode_go,
+                       compiled_models=compiled_models(omit={omitted}))
+    check("admission: a statically known tuple missing from the compiled table fails closed",
+          done.returncode == 0 and pinning.entry("opencode-go", "go-response") is None
+          and pinning.entry("opencode-go", "go-message") is not None,
+          done.stderr or pinning.ids())
 
     before = sync.file.read_bytes()
     done = sync.run(catalog, models_dev, codex, opencode, opencode_go)
@@ -382,8 +453,10 @@ def scenario_sync_failures():
     sync.run(catalog, models_dev, codex, opencode, opencode_go)
     before = sync.file.read_bytes()
 
-    def refused(name, bad_catalog, bad_models_dev, bad_codex=codex, bad_opencode=opencode, bad_opencode_go=opencode_go):
-        done = sync.run(bad_catalog, bad_models_dev, bad_codex, bad_opencode, bad_opencode_go)
+    def refused(name, bad_catalog, bad_models_dev, bad_codex=codex, bad_opencode=opencode,
+                bad_opencode_go=opencode_go, compiled_models=COMPILED_MODELS):
+        done = sync.run(bad_catalog, bad_models_dev, bad_codex, bad_opencode, bad_opencode_go,
+                        compiled_models=compiled_models)
         check(f"failures: {name} exits 1 and leaves the file as it is",
               done.returncode == 1 and done.stderr.startswith("error: ") and sync.file.read_bytes() == before,
               f"exit {done.returncode}: {done.stderr.strip()}")
@@ -403,6 +476,14 @@ def scenario_sync_failures():
     refused("a Codex list of another shape", catalog, models_dev, {"models": [{"name": "gpt-new"}]})
     refused("an OpenCode list that is not JSON", catalog, models_dev, codex, "502 Bad Gateway")
     refused("an OpenCode Go list without a supported chat model", catalog, models_dev, codex, opencode, {"data": []})
+    unusable = {"data": [served("go-no-tools", "messages", capabilities={
+        "tools": {"supported": False},
+        "reasoning": {"supported": True},
+    })]}
+    refused("an OpenCode Go list whose chat models are all unusable", catalog, models_dev, codex, opencode, unusable)
+    refused("a missing compiled model table", catalog, models_dev, compiled_models=None)
+    refused("a compiled model table without transport tuples", catalog, models_dev,
+            compiled_models="not a Rust model table")
 
 
 # ---- the picker of the real binary -----------------------------------------
