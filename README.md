@@ -327,7 +327,7 @@ Ollama · LM Studio · llama.cpp · vLLM · any OpenAI-compatible server
 
 </details>
 
-The model catalog is fetched live (hourly, with a disk cache and a bundled fallback, so there is no cold start offline). A model that Anthropic, Google or OpenAI just released (through their APIs, a Claude subscription or a ChatGPT subscription) reaches the picker before the catalog lists it: every hour a script compares the catalog with models.dev and with the Codex CLI's model list, and publishes what is missing in [`catalog/models.additions.v1.json`](catalog/models.additions.v1.json), which the client adds to its catalog. A local `~/.unharnessed/models.json` takes precedence.
+The model catalog is fetched live (hourly, with a disk cache and a bundled fallback, so there is no cold start offline). A model that Anthropic, Google, OpenAI or GitHub Copilot just released, or that OpenCode currently serves, reaches the picker before the catalog lists it: every hour a script compares the catalog with models.dev, the Codex CLI's model list, and OpenCode's public model lists, and publishes what is missing in [`catalog/models.additions.v1.json`](catalog/models.additions.v1.json), which the client adds to its catalog. Multi-transport providers are resolved only onto transport tuples compiled into the client; unmapped models fail closed. A local `~/.unharnessed/models.json` takes precedence.
 
 ### When a provider fails
 

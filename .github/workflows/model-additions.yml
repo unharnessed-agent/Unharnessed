@@ -1,9 +1,10 @@
 # Keeps catalog/models.additions.v1.json current: the models a provider
 # released that the model catalog does not list yet, which the client adds
 # to its picker (crates/uh-models/src/additions.rs). Every hour,
-# scripts/sync-model-additions.py compares models.dev and the Codex CLI's
-# model list with the catalog and this job commits the file when it changed. A run that cannot read a
-# source fails and leaves the file as it is.
+# scripts/sync-model-additions.py compares models.dev, the Codex CLI's
+# model list and OpenCode's public model lists with the catalog, and this job
+# commits the file when it changed. A run that cannot read a source fails and
+# leaves the file as it is.
 #
 # Unlike ci.yml this workflow writes: it pushes that one file to main.
 #
